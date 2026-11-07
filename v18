@@ -1,0 +1,80 @@
+-- R1 FARM DEBUG v18 (правильный DeathScreen + кнопки + авто-респавн)
+local SCRIPT_URL = "https://raw.githubusercontent.com/s1nkyy987653e3-sketch/v8.1/refs/heads/main/v18"
+
+if getgenv()._R1_BOT then
+    pcall(function()
+        for _, c in ipairs(getgenv()._R1_BOT.connections or {}) do
+            pcall(function() c:Disconnect() end)
+        end
+        for _, d in pairs(getgenv()._R1_BOT.drawings or {}) do
+            pcall(function() d:Remove() end)
+        end
+    end)
+    getgenv()._R1_BOT = nil
+end
+getgenv()._R1_BOT = {connections = {}, drawings = {}, lastDeath = false, respawned = false}
+
+if queue_on_teleport then
+    queue_on_teleport([[
+        task.wait(6)
+        loadstring(game:HttpGet("https://raw.githubusercontent.com/s1nkyy987653e3-sketch/v8.1/refs/heads/main/v18?v=" .. tostring(tick())))()
+    ]])
+end
+
+local P = game:GetService("Players")
+local LP = P.LocalPlayer
+
+print("=== [v18] Запущен | " .. os.date("%H:%M:%S") .. " ===")
+
+-- 1. Мониторинг DeathScreen (правильный детект: Enabled + Visible)
+task.spawn(function()
+    while task.wait(0.5) do
+        local pg = LP:FindFirstChild("PlayerGui")
+        if pg then
+            local death = pg:FindFirstChild("R1_DeathScreen")
+            local isDead = false
+            if death then
+                -- проверяем Enabled у ScreenGui и Visible у корневого фрейма
+                local enabled = death.Enabled
+                local root = death:FindFirstChild("Root")
+                local rootVisible = root and root.Visible
+                isDead = (enabled == true) or (rootVisible == true)
+            end
+            if isDead ~= getgenv()._R1_BOT.lastDeath then
+                getgenv()._R1_BOT.lastDeath = isDead
+                if isDead then
+                    print("[DEATH] DeathScreen АКТИВЕН")
+                    -- Разбор всех кнопок
+                    for _, obj in ipairs(death:GetDescendants()) do
+                        if obj:IsA("TextButton") or obj:IsA("ImageButton") then
+                            print(string.format("  [BTN] %s | %s | text=%s | visible=%s | enabled=%s | path=%s",
+                                obj.ClassName, obj.Name, tostring(obj.Text or "-"),
+                                tostring(obj.Visible), tostring(obj.Active),
+                                obj:GetFullName()))
+                        end
+                    end
+                else
+                    print("[DEATH] DeathScreen скрыт (респавн или лобби)")
+                end
+            end
+        end
+    end
+end)
+
+-- 2. Игрок (коротко)
+task.spawn(function()
+    while task.wait(3) do
+        local char = LP.Character
+        if char then
+            local hum = char:FindFirstChildOfClass("Humanoid")
+            local hrp = char:FindFirstChild("HumanoidRootPart")
+            if hum and hrp then
+                print(string.format("[P] %s | hp=%d | pos=(%d,%d,%d)",
+                    tostring(hum:GetState()), math.floor(hum.Health),
+                    math.floor(hrp.Position.X), math.floor(hrp.Position.Y), math.floor(hrp.Position.Z)))
+            end
+        end
+    end
+end)
+
+print("=== v18 готов ===")
