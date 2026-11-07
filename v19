@@ -1,0 +1,94 @@
+-- R1 FARM DEBUG v19 (детект смерти по Humanoid + кнопки + авто-респавн)
+local SCRIPT_URL = "https://raw.githubusercontent.com/s1nkyy987653e3-sketch/v8.1/refs/heads/main/v19"
+
+if getgenv()._R1_BOT then
+    pcall(function()
+        for _, c in ipairs(getgenv()._R1_BOT.connections or {}) do
+            pcall(function() c:Disconnect() end)
+        end
+        for _, d in pairs(getgenv()._R1_BOT.drawings or {}) do
+            pcall(function() d:Remove() end)
+        end
+    end)
+    getgenv()._R1_BOT = nil
+end
+getgenv()._R1_BOT = {connections = {}, drawings = {}, lastDead = false, buttonsDumped = false}
+
+if queue_on_teleport then
+    queue_on_teleport([[
+        task.wait(6)
+        loadstring(game:HttpGet("https://raw.githubusercontent.com/s1nkyy987653e3-sketch/v8.1/refs/heads/main/v19?v=" .. tostring(tick())))()
+    ]])
+end
+
+local P = game:GetService("Players")
+local LP = P.LocalPlayer
+
+print("=== [v19] Запущен | " .. os.date("%H:%M:%S") .. " ===")
+
+-- 1. Детект смерти по Humanoid.Health == 0 или State == Dead
+task.spawn(function()
+    while task.wait(0.5) do
+        local char = LP.Character
+        if char then
+            local hum = char:FindFirstChildOfClass("Humanoid")
+            if hum then
+                local isDead = (hum.Health <= 0) or (hum:GetState() == Enum.HumanoidStateType.Dead)
+                if isDead ~= getgenv()._R1_BOT.lastDead then
+                    getgenv()._R1_BOT.lastDead = isDead
+                    if isDead then
+                        print("[DEATH] Игрок мёртв (hp=0)")
+                        getgenv()._R1_BOT.buttonsDumped = false
+                        -- ждём 0.5 сек, чтобы DeathScreen успел появиться
+                        task.wait(0.5)
+                        local pg = LP:FindFirstChild("PlayerGui")
+                        if pg then
+                            local death = pg:FindFirstChild("R1_DeathScreen")
+                            if death then
+                                print(string.format("[DEATH] R1_DeathScreen: Enabled=%s", tostring(death.Enabled)))
+                                local root = death:FindFirstChild("Root")
+                                if root then
+                                    print(string.format("[DEATH] Root.Visible=%s", tostring(root.Visible)))
+                                end
+                                print("[DEATH] Кнопки:")
+                                local count = 0
+                                for _, obj in ipairs(death:GetDescendants()) do
+                                    if obj:IsA("TextButton") or obj:IsA("ImageButton") then
+                                        print(string.format("  [BTN] %s | %s | text=%s | visible=%s | active=%s | path=%s",
+                                            obj.ClassName, obj.Name, tostring(obj.Text or "-"),
+                                            tostring(obj.Visible), tostring(obj.Active),
+                                            obj:GetFullName()))
+                                        count = count + 1
+                                    end
+                                end
+                                if count == 0 then print("  (кнопок нет)") end
+                            else
+                                print("[DEATH] R1_DeathScreen не найден")
+                            end
+                        end
+                    else
+                        print("[DEATH] Игрок жив (респавн)")
+                    end
+                end
+            end
+        end
+    end
+end)
+
+-- 2. Игрок (коротко)
+task.spawn(function()
+    while task.wait(3) do
+        local char = LP.Character
+        if char then
+            local hum = char:FindFirstChildOfClass("Humanoid")
+            local hrp = char:FindFirstChild("HumanoidRootPart")
+            if hum and hrp then
+                print(string.format("[P] %s | hp=%d | pos=(%d,%d,%d)",
+                    tostring(hum:GetState()), math.floor(hum.Health),
+                    math.floor(hrp.Position.X), math.floor(hrp.Position.Y), math.floor(hrp.Position.Z)))
+            end
+        end
+    end
+end)
+
+print("=== v19 готов ===")
