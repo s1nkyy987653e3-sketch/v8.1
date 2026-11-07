@@ -1,13 +1,14 @@
--- R1 FARM DEBUG v7 (auto-restart via queue_on_teleport + URL)
--- ВАЖНО: замени URL на свой!
-local SCRIPT_URL = "https://pastebin.com/raw/XXXXX"  -- ← ТВОЙ URL
+-- R1 FARM DEBUG v7 (auto-restart via queue_on_teleport)
+-- GitHub URL: https://raw.githubusercontent.com/s1nkyy987653e3-sketch/v8.1/refs/heads/main/v7%20debug
+
+local SCRIPT_URL = "https://raw.githubusercontent.com/s1nkyy987653e3-sketch/v8.1/refs/heads/main/v7%20debug"
 
 -- ============================================================
--- АВТО-ПЕРЕЗАПУСК
+-- АВТО-ПЕРЕЗАПУСК через queue_on_teleport
 -- ============================================================
 if queue_on_teleport then
     queue_on_teleport("task.wait(2); loadstring(game:HttpGet('" .. SCRIPT_URL .. "'))()")
-    print("[QUEUE] Скрипт зарегистрирован для перезапуска после телепорта")
+    print("[QUEUE] Зарегистрирован перезапуск после телепорта")
 end
 
 -- ============================================================
@@ -34,6 +35,7 @@ RS.RenderStepped:Connect(function()
     getgenv()._R1_HEARTBEAT = tick()
 end)
 
+-- 1. Газ-стена (TPS_GasWall)
 task.spawn(function()
     while task.wait(3) do
         local gasWall = W:FindFirstChild("TPS_GasWall")
@@ -48,22 +50,28 @@ task.spawn(function()
     end
 end)
 
+-- 2. Зона (Zone/Safe/Storm/Gas/Circle)
 task.spawn(function()
     while task.wait(3) do
         print("=== [ZONE] ===")
+        local found = false
         for _, obj in ipairs(W:GetDescendants()) do
             local n = string.lower(obj.Name)
             if (string.find(n, "zone") or string.find(n, "safe") or string.find(n, "storm") or
-                string.find(n, "gas") or string.find(n, "circle"))
+                string.find(n, "gas") or string.find(n, "circle") or string.find(n, "ring"))
                 and (obj:IsA("BasePart") or obj:IsA("Model") or obj:IsA("Folder")) then
                 local pos = safePos(obj)
-                print(string.format("  [Z] %s : %s | pos: (%.1f, %.1f, %.1f)",
-                    obj.ClassName, obj.Name, pos.X, pos.Y, pos.Z))
+                print(string.format("  [Z] %s : %s | pos: (%.1f, %.1f, %.1f) | parent: %s",
+                    obj.ClassName, obj.Name, pos.X, pos.Y, pos.Z,
+                    obj.Parent and obj.Parent.Name or "nil"))
+                found = true
             end
         end
+        if not found then print("  (зоны нет)") end
     end
 end)
 
+-- 3. Игрок
 task.spawn(function()
     while task.wait(1) do
         local char = LP.Character
@@ -79,6 +87,7 @@ task.spawn(function()
     end
 end)
 
+-- 4. Кнопки лобби
 task.spawn(function()
     while task.wait(5) do
         local char = LP.Character
@@ -102,6 +111,7 @@ task.spawn(function()
     end
 end)
 
+-- 5. Клики
 UIS.InputBegan:Connect(function(input, gp)
     if gp then return end
     if input.UserInputType == Enum.UserInputType.MouseButton1 then
@@ -122,4 +132,18 @@ UIS.InputBegan:Connect(function(input, gp)
     end
 end)
 
-print("=== v7 готов. После телепорта — АВТОПЕРЕЗАПУСК через queue_on_teleport. ===")
+-- 6. W ADDED/REMOVED
+W.ChildAdded:Connect(function(obj)
+    local n = string.lower(obj.Name)
+    if string.find(n, "gas") or string.find(n, "zone") or string.find(n, "storm") then
+        print("[W ADDED] " .. obj.ClassName .. " : " .. obj.Name)
+    end
+end)
+W.ChildRemoved:Connect(function(obj)
+    local n = string.lower(obj.Name)
+    if string.find(n, "gas") or string.find(n, "zone") or string.find(n, "storm") then
+        print("[W REMOVED] " .. obj.ClassName .. " : " .. obj.Name)
+    end
+end)
+
+print("=== v7 готов. После телепорта — АВТОПЕРЕЗАПУСК. ===")
