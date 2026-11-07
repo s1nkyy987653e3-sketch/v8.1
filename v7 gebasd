@@ -1,0 +1,125 @@
+-- R1 FARM DEBUG v7 (auto-restart via queue_on_teleport + URL)
+-- ВАЖНО: замени URL на свой!
+local SCRIPT_URL = "https://pastebin.com/raw/XXXXX"  -- ← ТВОЙ URL
+
+-- ============================================================
+-- АВТО-ПЕРЕЗАПУСК
+-- ============================================================
+if queue_on_teleport then
+    queue_on_teleport("task.wait(2); loadstring(game:HttpGet('" .. SCRIPT_URL .. "'))()")
+    print("[QUEUE] Скрипт зарегистрирован для перезапуска после телепорта")
+end
+
+-- ============================================================
+-- ОСНОВНОЙ КОД
+-- ============================================================
+local P = game:GetService("Players")
+local W = game:GetService("Workspace")
+local LP = P.LocalPlayer
+local RS = game:GetService("RunService")
+local UIS = game:GetService("UserInputService")
+
+print("=== [v7] Запущен | " .. os.date("%H:%M:%S") .. " ===")
+
+local function safePos(obj)
+    if obj:IsA("BasePart") then return obj.Position end
+    if obj:IsA("Model") then
+        local ok, pivot = pcall(function() return obj:GetPivot().Position end)
+        if ok then return pivot end
+    end
+    return Vector3.zero
+end
+
+RS.RenderStepped:Connect(function()
+    getgenv()._R1_HEARTBEAT = tick()
+end)
+
+task.spawn(function()
+    while task.wait(3) do
+        local gasWall = W:FindFirstChild("TPS_GasWall")
+        if gasWall then
+            print("=== [GASWALL] ===")
+            for _, child in ipairs(gasWall:GetChildren()) do
+                local pos = safePos(child)
+                print(string.format("  [GAS] %s : %s | pos: (%.1f, %.1f, %.1f)",
+                    child.ClassName, child.Name, pos.X, pos.Y, pos.Z))
+            end
+        end
+    end
+end)
+
+task.spawn(function()
+    while task.wait(3) do
+        print("=== [ZONE] ===")
+        for _, obj in ipairs(W:GetDescendants()) do
+            local n = string.lower(obj.Name)
+            if (string.find(n, "zone") or string.find(n, "safe") or string.find(n, "storm") or
+                string.find(n, "gas") or string.find(n, "circle"))
+                and (obj:IsA("BasePart") or obj:IsA("Model") or obj:IsA("Folder")) then
+                local pos = safePos(obj)
+                print(string.format("  [Z] %s : %s | pos: (%.1f, %.1f, %.1f)",
+                    obj.ClassName, obj.Name, pos.X, pos.Y, pos.Z))
+            end
+        end
+    end
+end)
+
+task.spawn(function()
+    while task.wait(1) do
+        local char = LP.Character
+        if char then
+            local hum = char:FindFirstChildOfClass("Humanoid")
+            local hrp = char:FindFirstChild("HumanoidRootPart")
+            if hum and hrp then
+                print(string.format("=== [P] %s | hp=%d | pos=(%d,%d,%d) ===",
+                    tostring(hum:GetState()), math.floor(hum.Health),
+                    math.floor(hrp.Position.X), math.floor(hrp.Position.Y), math.floor(hrp.Position.Z)))
+            end
+        end
+    end
+end)
+
+task.spawn(function()
+    while task.wait(5) do
+        local char = LP.Character
+        if char then
+            local hrp = char:FindFirstChild("HumanoidRootPart")
+            if hrp and hrp.Position.Y < 100 then
+                local pg = LP:FindFirstChild("PlayerGui")
+                if pg then
+                    print("=== [LOBBY] ===")
+                    for _, obj in ipairs(pg:GetDescendants()) do
+                        if obj:IsA("TextButton") and obj.Visible then
+                            local n = string.lower(obj.Name)
+                            if string.find(n, "play") or string.find(n, "solo") or string.find(n, "queue") then
+                                print(string.format("  [BTN] %s | path=%s", obj.Name, obj:GetFullName()))
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+end)
+
+UIS.InputBegan:Connect(function(input, gp)
+    if gp then return end
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        local pg = LP:FindFirstChild("PlayerGui")
+        if pg then
+            local mouse = UIS:GetMouseLocation()
+            for _, obj in ipairs(pg:GetDescendants()) do
+                if obj:IsA("TextButton") and obj.Visible then
+                    local a = obj.AbsolutePosition
+                    local s = obj.AbsoluteSize
+                    if mouse.X >= a.X and mouse.X <= a.X + s.X and
+                       mouse.Y >= a.Y and mouse.Y <= a.Y + s.Y then
+                        print(string.format("=== [CLICK] %s ===", obj.Name))
+                    end
+                end
+            end
+        end
+    end
+end)
+
+print("=== v7 готов. После телепорта — АВТОПЕРЕЗАПУСК через queue_on_teleport. ===")
