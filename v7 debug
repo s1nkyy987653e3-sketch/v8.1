@@ -1,14 +1,29 @@
--- R1 FARM DEBUG v7 (auto-restart via queue_on_teleport)
--- GitHub URL: https://raw.githubusercontent.com/s1nkyy987653e3-sketch/v8.1/refs/heads/main/v7%20debug
-
+-- R1 FARM DEBUG v8.1 (внутренний watcher через getgenv)
 local SCRIPT_URL = "https://raw.githubusercontent.com/s1nkyy987653e3-sketch/v8.1/refs/heads/main/v7%20debug"
 
 -- ============================================================
--- АВТО-ПЕРЕЗАПУСК через queue_on_teleport
+-- СТОРОЖ (работает в фоне, выживает при телепорте)
 -- ============================================================
-if queue_on_teleport then
-    queue_on_teleport("task.wait(2); loadstring(game:HttpGet('" .. SCRIPT_URL .. "'))()")
-    print("[QUEUE] Зарегистрирован перезапуск после телепорта")
+if not getgenv()._R1_WATCHER_ACTIVE then
+    getgenv()._R1_WATCHER_ACTIVE = true
+    
+    task.spawn(function()
+        while true do
+            task.wait(3)
+            local hb = getgenv()._R1_HEARTBEAT or 0
+            -- Если heartbeat не обновлялся 8 секунд — скрипт умер, перезапускаем
+            if tick() - hb > 8 then
+                print("[WATCHER] Скрипт завис или умер. Перезапуск через loadstring...")
+                getgenv()._R1_HEARTBEAT = tick() -- сбрасываем, чтобы не спамило
+                task.spawn(function()
+                    local ok, err = pcall(function()
+                        loadstring(game:HttpGet(SCRIPT_URL))()
+                    end)
+                    if not ok then print("[WATCHER] Ошибка перезапуска: " .. tostring(err)) end
+                end)
+            end
+        end
+    end)
 end
 
 -- ============================================================
@@ -20,7 +35,12 @@ local LP = P.LocalPlayer
 local RS = game:GetService("RunService")
 local UIS = game:GetService("UserInputService")
 
-print("=== [v7] Запущен | " .. os.date("%H:%M:%S") .. " ===")
+print("=== [v8.1] Запущен | " .. os.date("%H:%M:%S") .. " ===")
+
+-- Обновляем heartbeat каждый кадр (показываем сторожу, что мы живы)
+RS.RenderStepped:Connect(function()
+    getgenv()._R1_HEARTBEAT = tick()
+end)
 
 local function safePos(obj)
     if obj:IsA("BasePart") then return obj.Position end
@@ -31,11 +51,7 @@ local function safePos(obj)
     return Vector3.zero
 end
 
-RS.RenderStepped:Connect(function()
-    getgenv()._R1_HEARTBEAT = tick()
-end)
-
--- 1. Газ-стена (TPS_GasWall)
+-- 1. Газ-стена
 task.spawn(function()
     while task.wait(3) do
         local gasWall = W:FindFirstChild("TPS_GasWall")
@@ -50,7 +66,7 @@ task.spawn(function()
     end
 end)
 
--- 2. Зона (Zone/Safe/Storm/Gas/Circle)
+-- 2. Зона
 task.spawn(function()
     while task.wait(3) do
         print("=== [ZONE] ===")
@@ -61,9 +77,8 @@ task.spawn(function()
                 string.find(n, "gas") or string.find(n, "circle") or string.find(n, "ring"))
                 and (obj:IsA("BasePart") or obj:IsA("Model") or obj:IsA("Folder")) then
                 local pos = safePos(obj)
-                print(string.format("  [Z] %s : %s | pos: (%.1f, %.1f, %.1f) | parent: %s",
-                    obj.ClassName, obj.Name, pos.X, pos.Y, pos.Z,
-                    obj.Parent and obj.Parent.Name or "nil"))
+                print(string.format("  [Z] %s : %s | pos: (%.1f, %.1f, %.1f)",
+                    obj.ClassName, obj.Name, pos.X, pos.Y, pos.Z))
                 found = true
             end
         end
@@ -132,18 +147,4 @@ UIS.InputBegan:Connect(function(input, gp)
     end
 end)
 
--- 6. W ADDED/REMOVED
-W.ChildAdded:Connect(function(obj)
-    local n = string.lower(obj.Name)
-    if string.find(n, "gas") or string.find(n, "zone") or string.find(n, "storm") then
-        print("[W ADDED] " .. obj.ClassName .. " : " .. obj.Name)
-    end
-end)
-W.ChildRemoved:Connect(function(obj)
-    local n = string.lower(obj.Name)
-    if string.find(n, "gas") or string.find(n, "zone") or string.find(n, "storm") then
-        print("[W REMOVED] " .. obj.ClassName .. " : " .. obj.Name)
-    end
-end)
-
-print("=== v7 готов. После телепорта — АВТОПЕРЕЗАПУСК. ===")
+print("=== v8.1 готов. Сторож активен. ===")
