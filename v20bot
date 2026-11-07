@@ -1,7 +1,6 @@
--- R1 FARM BOT v20 (ESP + авто-респавн + kill switch)
-local SCRIPT_URL = "https://raw.githubusercontent.com/s1nkyy987653e3-sketch/v8.1/refs/heads/main/v20"
+-- R1 FARM BOT v20 (ESP + авто-респавн + kill switch, fix Font)
+local SCRIPT_URL = "https://raw.githubusercontent.com/s1nkyy987653e3-sketch/v8.1/refs/heads/main/v20bot"
 
--- Kill switch: убиваем предыдущий экземпляр
 if getgenv()._R1_BOT then
     pcall(function()
         for _, c in ipairs(getgenv()._R1_BOT.connections or {}) do
@@ -24,7 +23,7 @@ getgenv()._R1_BOT = {
 if queue_on_teleport then
     queue_on_teleport([[
         task.wait(6)
-        loadstring(game:HttpGet("https://raw.githubusercontent.com/s1nkyy987653e3-sketch/v8.1/refs/heads/main/v20?v=" .. tostring(tick())))()
+        loadstring(game:HttpGet("https://raw.githubusercontent.com/s1nkyy987653e3-sketch/v8.1/refs/heads/main/v20bot?v=" .. tostring(tick())))()
     ]])
 end
 
@@ -36,22 +35,17 @@ local CAM = W.CurrentCamera
 
 print("=== [BOT v20] Запущен | " .. os.date("%H:%M:%S") .. " ===")
 
--- ==== Конфиг ESP ====
 local ESP_RANGE = 5000
 local ESP_COLOR = Color3.fromRGB(255, 50, 50)
-local ESP_FONT = Enum.Font.SourceSansBold
 local ESP_SIZE = 14
 
--- ==== Drawing ====
-local drawings = {}  -- [model] = {text, line}
+local drawings = {}
 local zoneText = Drawing.new("Text")
 zoneText.Visible = false
 zoneText.Size = 18
-zoneText.Font = Enum.Font.SourceSansBold
 zoneText.Outline = true
 zoneText.Center = true
 
--- ==== Утилиты ====
 local function getTargets()
     local list = {}
     local bots = W:FindFirstChild("TPS_Bots")
@@ -87,7 +81,6 @@ local function worldToScreen(pos)
     return nil
 end
 
--- ==== Авто-респавн ====
 local function tryRespawn()
     if not getgenv()._R1_BOT.autoRespawn then return end
     local now = tick()
@@ -105,15 +98,12 @@ local function tryRespawn()
     if not play then return end
     local btn = play:FindFirstChild("PlayAgain")
     if not btn or not btn:IsA("TextButton") then return end
-    -- Пробуем несколько способов нажатия
     pcall(function() btn:Activate() end)
     pcall(function() btn.MouseButton1Click:Fire() end)
     print("[RESPAWN] Нажал PlayAgain")
 end
 
--- ==== Основной цикл ====
 RS.RenderStepped:Connect(function()
-    -- 1. ESP на ботов
     local targets = getTargets()
     local seen = {}
     local lpChar = LP.Character
@@ -129,7 +119,6 @@ RS.RenderStepped:Connect(function()
                 if not drawings[key] then
                     local txt = Drawing.new("Text")
                     txt.Size = ESP_SIZE
-                    txt.Font = ESP_FONT
                     txt.Outline = true
                     txt.Center = true
                     txt.Color = ESP_COLOR
@@ -157,7 +146,6 @@ RS.RenderStepped:Connect(function()
         end
     end
 
-    -- 2. Детект смерти + авто-респавн
     if lpChar then
         local hum = lpChar:FindFirstChildOfClass("Humanoid")
         if hum then
@@ -176,7 +164,6 @@ RS.RenderStepped:Connect(function()
         end
     end
 
-    -- 3. Индикатор (вверху экрана)
     local status = "ESP: ON | Авто-респавн: " .. (getgenv()._R1_BOT.autoRespawn and "ON" or "OFF")
     zoneText.Text = status
     zoneText.Color = Color3.fromRGB(0, 255, 0)
@@ -184,7 +171,6 @@ RS.RenderStepped:Connect(function()
     zoneText.Visible = true
 end)
 
--- ==== Команды в консоли ====
 getgenv()._R1_BOT.toggleRespawn = function()
     getgenv()._R1_BOT.autoRespawn = not getgenv()._R1_BOT.autoRespawn
     print("[BOT] Авто-респавн:", getgenv()._R1_BOT.autoRespawn)
