@@ -289,15 +289,6 @@ end
     end
 end
 
-local function UpdateESP()
-    local targets = {}
-    for _, p in ipairs(Players:GetPlayers()) do
-        if p ~= LocalPlayer and p.Character and p.Character:FindFirstChild("HumanoidRootPart") then
-            if not Config.TeamCheck or p.Team ~= LocalPlayer.Team then
-                targets[p.Character] = { name = p.Name }
-            end
-        end
-    end
 
     for model in pairs(Drawings) do
         if not targets[model] or not model.Parent then DestroyVisuals(model) end
