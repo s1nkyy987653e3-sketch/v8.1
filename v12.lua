@@ -1,5 +1,5 @@
 --[[
-    ESP / WH + CHAMS + AIMBOT + TRIGGERBOT + SKELETON v14.0
+    ESP / WH + CHAMS + AIMBOT + TRIGGERBOT + SKELETON v15.0
 ]]
 
 local Players = game:GetService("Players")
@@ -181,7 +181,7 @@ local Main = Make("Frame", {Size=UDim2.new(0, 300, 0, 520), Position=UDim2.new(0
 Make("UICorner", {CornerRadius=UDim.new(0, 8)}, Main) Make("UIStroke", {Color=Color3.fromRGB(60, 60, 70), Thickness=1}, Main)
 local Header = Make("Frame", {Size=UDim2.new(1, 0, 0, 32), BackgroundColor3=Color3.fromRGB(35, 35, 42), BorderSizePixel=0, Parent=Main})
 Make("UICorner", {CornerRadius=UDim.new(0, 8)}, Header)
-Make("TextLabel", {Size=UDim2.new(1, -100, 1, 0), Position=UDim2.new(0, 12, 0, 0), BackgroundTransparency=1, Text="ESP v14.0", TextColor3=Color3.fromRGB(230, 230, 230), Font=Enum.Font.GothamBold, TextSize=14, TextXAlignment=Enum.TextXAlignment.Left, Parent=Header})
+Make("TextLabel", {Size=UDim2.new(1, -100, 1, 0), Position=UDim2.new(0, 12, 0, 0), BackgroundTransparency=1, Text="ESP v15.0", TextColor3=Color3.fromRGB(230, 230, 230), Font=Enum.Font.GothamBold, TextSize=14, TextXAlignment=Enum.TextXAlignment.Left, Parent=Header})
 local IconBtn
 Make("TextButton", {Size=UDim2.new(0, 26, 0, 26), Position=UDim2.new(1, -30, 0, 3), BackgroundTransparency=1, Text="✕", TextColor3=Color3.fromRGB(255, 120, 120), Font=Enum.Font.GothamBold, TextSize=14, Parent=Header}).MouseButton1Click:Connect(function()
     TweenService:Create(Main, TweenInfo.new(0.2, Enum.EasingStyle.Back, Enum.EasingDirection.In), {Size=UDim2.new(0, 0, 0, 0)}):Play() task.wait(0.2) Main.Visible = false IconBtn.Visible = true
@@ -235,8 +235,14 @@ Make("UICorner", {CornerRadius=UDim.new(0,4)}, abTg)
 abTg.MouseButton1Click:Connect(function() Config.AimEnabled = not Config.AimEnabled abTg.BackgroundColor3 = Config.AimEnabled and Color3.fromRGB(0,180,60) or Color3.fromRGB(60,60,80) abTg.Text = Config.AimEnabled and "AIMBOT: ON" or "AIMBOT: OFF" end)
 AddSlider("Плавность", 1, 100, Config.AimSmooth * 100, function(v) Config.AimSmooth = v / 100 end)
 AddSlider("Радиус FOV", 50, 500, Config.AimFOV, function(v) Config.AimFOV = v end)
+AddSeparator("TRIGGERBOT")
+local tbTg = Make("TextButton", {Size=UDim2.new(1, -8, 0, 26), BackgroundColor3=Config.TBEnabled and Color3.fromRGB(0,180,60) or Color3.fromRGB(60,60,80), Text=Config.TBEnabled and "TRIGGERBOT: ON" or "TRIGGERBOT: OFF", TextColor3=Color3.fromRGB(255,255,255), Font=Enum.Font.GothamBold, TextSize=12, BorderSizePixel=0, Parent=Scroll, LayoutOrder=NextOrder()})
+Make("UICorner", {CornerRadius=UDim.new(0,4)}, tbTg)
+tbTg.MouseButton1Click:Connect(function() Config.TBEnabled = not Config.TBEnabled tbTg.BackgroundColor3 = Config.TBEnabled and Color3.fromRGB(0,180,60) or Color3.fromRGB(60,60,80) tbTg.Text = Config.TBEnabled and "TRIGGERBOT: ON" or "TRIGGERBOT: OFF" end)
+AddSlider("Задержка (мс)", 10, 500, Config.TBDelay * 1000, function(v) Config.TBDelay = v / 1000 end)
 
--- Бинд Аимбота
+-- БИНДЫ В МЕНЮ
+AddSeparator("БИНДЫ")
 local aimBindBtn = Make("TextButton", {Size=UDim2.new(1, -8, 0, 26), BackgroundColor3=Color3.fromRGB(60,60,80), Text="Бинд Аимбота: " .. Config.AimBind.Name, TextColor3=Color3.fromRGB(255,255,255), Font=Enum.Font.GothamBold, TextSize=12, BorderSizePixel=0, Parent=Scroll, LayoutOrder=NextOrder()})
 Make("UICorner", {CornerRadius=UDim.new(0,4)}, aimBindBtn)
 local isBindingAim = false
@@ -245,14 +251,6 @@ aimBindBtn.MouseButton1Click:Connect(function()
     aimBindBtn.Text = "Нажмите клавишу..."
     aimBindBtn.BackgroundColor3 = Color3.fromRGB(180, 40, 40)
 end)
-
-AddSeparator("TRIGGERBOT")
-local tbTg = Make("TextButton", {Size=UDim2.new(1, -8, 0, 26), BackgroundColor3=Config.TBEnabled and Color3.fromRGB(0,180,60) or Color3.fromRGB(60,60,80), Text=Config.TBEnabled and "TRIGGERBOT: ON" or "TRIGGERBOT: OFF", TextColor3=Color3.fromRGB(255,255,255), Font=Enum.Font.GothamBold, TextSize=12, BorderSizePixel=0, Parent=Scroll, LayoutOrder=NextOrder()})
-Make("UICorner", {CornerRadius=UDim.new(0,4)}, tbTg)
-tbTg.MouseButton1Click:Connect(function() Config.TBEnabled = not Config.TBEnabled tbTg.BackgroundColor3 = Config.TBEnabled and Color3.fromRGB(0,180,60) or Color3.fromRGB(60,60,80) tbTg.Text = Config.TBEnabled and "TRIGGERBOT: ON" or "TRIGGERBOT: OFF" end)
-AddSlider("Задержка (мс)", 10, 500, Config.TBDelay * 1000, function(v) Config.TBDelay = v / 1000 end)
-
--- Бинд Триггербота
 local tbBindBtn = Make("TextButton", {Size=UDim2.new(1, -8, 0, 26), BackgroundColor3=Color3.fromRGB(60,60,80), Text="Бинд Триггербота: " .. Config.TBBind.Name, TextColor3=Color3.fromRGB(255,255,255), Font=Enum.Font.GothamBold, TextSize=12, BorderSizePixel=0, Parent=Scroll, LayoutOrder=NextOrder()})
 Make("UICorner", {CornerRadius=UDim.new(0,4)}, tbBindBtn)
 local isBindingTB = false
@@ -262,11 +260,9 @@ tbBindBtn.MouseButton1Click:Connect(function()
     tbBindBtn.BackgroundColor3 = Color3.fromRGB(180, 40, 40)
 end)
 
--- Обработка нажатий (бинды)
+-- ОБРАБОТКА НАЖАТИЙ
 UserInputService.InputBegan:Connect(function(input, gp)
     if gp then return end
-    
-    -- Настройка бинда Аимбота
     if isBindingAim then
         if input.UserInputType == Enum.UserInputType.Keyboard then
             Config.AimBind = input.KeyCode
@@ -276,8 +272,6 @@ UserInputService.InputBegan:Connect(function(input, gp)
         end
         return
     end
-    
-    -- Настройка бинда Триггербота
     if isBindingTB then
         if input.UserInputType == Enum.UserInputType.Keyboard then
             Config.TBBind = input.KeyCode
@@ -287,8 +281,6 @@ UserInputService.InputBegan:Connect(function(input, gp)
         end
         return
     end
-
-    -- Активация Аимбота
     if input.KeyCode == Config.AimBind then
         Config.AimEnabled = not Config.AimEnabled
         if abTg then 
@@ -296,8 +288,6 @@ UserInputService.InputBegan:Connect(function(input, gp)
             abTg.Text = Config.AimEnabled and "AIMBOT: ON" or "AIMBOT: OFF"
         end
     end
-    
-    -- Активация Триггербота
     if input.KeyCode == Config.TBBind then
         Config.TBEnabled = not Config.TBEnabled
         if tbTg then 
@@ -307,7 +297,7 @@ UserInputService.InputBegan:Connect(function(input, gp)
     end
 end)
 
--- Функция полной очистки
+-- ВЫГРУЗКА
 local function UnloadScript()
     ClearAll()
     for model, data in pairs(Drawings) do
@@ -329,7 +319,6 @@ local function UnloadScript()
     print("[ESP] Выгружено.")
 end
 
--- Кнопка выгрузки
 Make("TextButton", {Size=UDim2.new(1, -16, 0, 26), Position=UDim2.new(0, 8, 1, -34), BackgroundColor3=Color3.fromRGB(180, 40, 40), Text="Выгрузить всё", TextColor3=Color3.fromRGB(255, 255, 255), Font=Enum.Font.GothamBold, TextSize=12, BorderSizePixel=0, Parent=Main}).MouseButton1Click:Connect(UnloadScript)
 
-print("[ESP] v14.0 loaded.")
+print("[ESP] v15.0 loaded.")
