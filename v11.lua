@@ -225,7 +225,16 @@ local function TriggerBot()
 end
 
 local function AimBot()
-    if not Config.AimEnabled then return end
+    if not Config.AimEnabled then 
+        if Camera.CameraType == Enum.CameraType.Scriptable then
+            Camera.CameraType = Enum.CameraType.Custom
+            if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then
+                Camera.CameraSubject = LocalPlayer.Character.Humanoid
+            end
+        end
+        return 
+    end
+    
     local closest = nil
     local minDist = Config.AimFOV
     local vp = Camera.ViewportSize
@@ -234,7 +243,7 @@ local function AimBot()
     for _, p in ipairs(Players:GetPlayers()) do
         if p ~= LocalPlayer and p.Character and p.Character:FindFirstChild("Head") then
             local hum = p.Character:FindFirstChildOfClass("Humanoid")
-            if hum and hum.Health > 0 and p.Team ~= LocalPlayer.Team then
+            if hum and hum.Health > 0 and (not Config.TeamCheck or p.Team ~= LocalPlayer.Team) then
                 local sp, onScreen = Camera:WorldToViewportPoint(p.Character.Head.Position)
                 if onScreen then
                     local d2d = (Vector2.new(sp.X, sp.Y) - Vector2.new(cx, cy)).Magnitude
@@ -246,6 +255,29 @@ local function AimBot()
             end
         end
     end
+
+    if closest and IsVisible(closest.Position) then
+        -- Отключаем стандартную камеру, чтобы она не мешала
+        if Camera.CameraType ~= Enum.CameraType.Scriptable then
+            Camera.CameraType = Enum.CameraType.Scriptable
+        end
+        
+        local targetCF = CFrame.new(Camera.CFrame.Position, closest.Position)
+        if Config.AimSmooth > 0 then
+            Camera.CFrame = Camera.CFrame:Lerp(targetCF, Config.AimSmooth)
+        else
+            Camera.CFrame = targetCF
+        end
+    else
+        -- Если цели нет, возвращаем камеру обратно
+        if Camera.CameraType == Enum.CameraType.Scriptable then
+            Camera.CameraType = Enum.CameraType.Custom
+            if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then
+                Camera.CameraSubject = LocalPlayer.Character.Humanoid
+            end
+        end
+    end
+end
 
     if closest and IsVisible(closest.Position) then
         local targetCF = CFrame.new(Camera.CFrame.Position, closest.Position)
