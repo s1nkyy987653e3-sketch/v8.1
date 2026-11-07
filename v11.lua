@@ -279,17 +279,6 @@ local function AimBot()
     end
 end
 
-    if closest and IsVisible(closest.Position) then
-        local targetCF = CFrame.new(Camera.CFrame.Position, closest.Position)
-        if Config.AimSmooth > 0 then
-            Camera.CFrame = Camera.CFrame:Lerp(targetCF, Config.AimSmooth)
-        else
-            Camera.CFrame = targetCF
-        end
-    end
-end
-
-
     for model in pairs(Drawings) do
         if not targets[model] or not model.Parent then DestroyVisuals(model) end
     end
