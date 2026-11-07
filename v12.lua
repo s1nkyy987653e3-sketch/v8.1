@@ -1,5 +1,5 @@
 --[[
-    ESP / WH + CHAMS + AIMBOT + TRIGGERBOT + SKELETON v11.1
+    ESP / WH + CHAMS + AIMBOT + TRIGGERBOT + SKELETON v13.0
 ]]
 
 local Players = game:GetService("Players")
@@ -20,27 +20,6 @@ local Config = {
     ShowBots = true, TeamCheck = false, WallCheckRaycast = true, MaxDistance = 1000,
     AimEnabled = false, AimFOV = 150, AimSmooth = 0.2, TBEnabled = false, TBDelay = 0.05, TBTeamCheck = true
 }
-
-local CONFIG_FILE = "esp_config.json"
-local function SaveConfig()
-    if not writefile then return end
-    local data = {}
-    for k, v in pairs(Config) do
-        if typeof(v) == "Color3" then data[k] = {math.floor(v.R*255), math.floor(v.G*255), math.floor(v.B*255)}
-        else data[k] = v end
-    end
-    pcall(function() writefile(CONFIG_FILE, HttpService:JSONEncode(data)) end)
-end
-local function LoadConfig()
-    if not (isfile and isfile(CONFIG_FILE)) then return end
-    pcall(function()
-        local data = HttpService:JSONDecode(readfile(CONFIG_FILE))
-        for k, v in pairs(data) do
-            if type(v) == "table" and #v == 3 then Config[k] = Color3.fromRGB(v[1], v[2], v[3]) else Config[k] = v end
-        end
-    end)
-end
-LoadConfig()
 
 local function IsVisible(worldPos)
     if not Config.WallCheckRaycast then return true end
@@ -202,7 +181,7 @@ local Main = Make("Frame", {Size=UDim2.new(0, 300, 0, 520), Position=UDim2.new(0
 Make("UICorner", {CornerRadius=UDim.new(0, 8)}, Main) Make("UIStroke", {Color=Color3.fromRGB(60, 60, 70), Thickness=1}, Main)
 local Header = Make("Frame", {Size=UDim2.new(1, 0, 0, 32), BackgroundColor3=Color3.fromRGB(35, 35, 42), BorderSizePixel=0, Parent=Main})
 Make("UICorner", {CornerRadius=UDim.new(0, 8)}, Header)
-Make("TextLabel", {Size=UDim2.new(1, -100, 1, 0), Position=UDim2.new(0, 12, 0, 0), BackgroundTransparency=1, Text="ESP v11.1", TextColor3=Color3.fromRGB(230, 230, 230), Font=Enum.Font.GothamBold, TextSize=14, TextXAlignment=Enum.TextXAlignment.Left, Parent=Header})
+Make("TextLabel", {Size=UDim2.new(1, -100, 1, 0), Position=UDim2.new(0, 12, 0, 0), BackgroundTransparency=1, Text="ESP v13.0", TextColor3=Color3.fromRGB(230, 230, 230), Font=Enum.Font.GothamBold, TextSize=14, TextXAlignment=Enum.TextXAlignment.Left, Parent=Header})
 local IconBtn
 Make("TextButton", {Size=UDim2.new(0, 26, 0, 26), Position=UDim2.new(1, -30, 0, 3), BackgroundTransparency=1, Text="✕", TextColor3=Color3.fromRGB(255, 120, 120), Font=Enum.Font.GothamBold, TextSize=14, Parent=Header}).MouseButton1Click:Connect(function()
     TweenService:Create(Main, TweenInfo.new(0.2, Enum.EasingStyle.Back, Enum.EasingDirection.In), {Size=UDim2.new(0, 0, 0, 0)}):Play() task.wait(0.2) Main.Visible = false IconBtn.Visible = true
@@ -261,5 +240,49 @@ local tbTg = Make("TextButton", {Size=UDim2.new(1, -8, 0, 26), BackgroundColor3=
 Make("UICorner", {CornerRadius=UDim.new(0,4)}, tbTg)
 tbTg.MouseButton1Click:Connect(function() Config.TBEnabled = not Config.TBEnabled tbTg.BackgroundColor3 = Config.TBEnabled and Color3.fromRGB(0,180,60) or Color3.fromRGB(60,60,80) tbTg.Text = Config.TBEnabled and "TRIGGERBOT: ON" or "TRIGGERBOT: OFF" end)
 AddSlider("Задержка (мс)", 10, 500, Config.TBDelay * 1000, function(v) Config.TBDelay = v / 1000 end)
-Make("TextButton", {Size=UDim2.new(1, -16, 0, 26), Position=UDim2.new(0, 8, 1, -34), BackgroundColor3=Color3.fromRGB(180, 40, 40), Text="Выгрузить", TextColor3=Color3.fromRGB(255, 255, 255), Font=Enum.Font.GothamBold, TextSize=12, BorderSizePixel=0, Parent=Main}).MouseButton1Click:Connect(function() ScreenGui:Destroy() end)
-print("[ESP] v11.1 loaded.")
+
+-- Функция полной очистки
+local function UnloadScript()
+    ClearAll()
+    for model, data in pairs(Drawings) do
+        for _, obj in pairs(data) do
+            if type(obj) == "table" then
+                for _, line in pairs(obj) do pcall(function() line:Remove() end) end
+            elseif obj then
+                pcall(function() obj:Remove() end)
+            end
+        end
+    end
+    pcall(function()
+        Camera.CameraType = Enum.CameraType.Custom
+        if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then
+            Camera.CameraSubject = LocalPlayer.Character.Humanoid
+        end
+    end)
+    pcall(function() ScreenGui:Destroy() end)
+    print("[ESP] Выгружено.")
+end
+
+-- Кнопка выгрузки
+Make("TextButton", {Size=UDim2.new(1, -16, 0, 26), Position=UDim2.new(0, 8, 1, -34), BackgroundColor3=Color3.fromRGB(180, 40, 40), Text="Выгрузить всё", TextColor3=Color3.fromRGB(255, 255, 255), Font=Enum.Font.GothamBold, TextSize=12, BorderSizePixel=0, Parent=Main}).MouseButton1Click:Connect(UnloadScript)
+
+-- Бинды (X - Аимбот, Z - Триггербот)
+UserInputService.InputBegan:Connect(function(input, gp)
+    if gp then return end
+    if input.KeyCode == Enum.KeyCode.X then
+        Config.AimEnabled = not Config.AimEnabled
+        if abTg then 
+            abTg.BackgroundColor3 = Config.AimEnabled and Color3.fromRGB(0,180,60) or Color3.fromRGB(60,60,80)
+            abTg.Text = Config.AimEnabled and "AIMBOT: ON" or "AIMBOT: OFF"
+        end
+    end
+    if input.KeyCode == Enum.KeyCode.Z then
+        Config.TBEnabled = not Config.TBEnabled
+        if tbTg then 
+            tbTg.BackgroundColor3 = Config.TBEnabled and Color3.fromRGB(0,180,60) or Color3.fromRGB(60,60,80)
+            tbTg.Text = Config.TBEnabled and "TRIGGERBOT: ON" or "TRIGGERBOT: OFF"
+        end
+    end
+end)
+
+print("[ESP] v13.0 loaded.")
