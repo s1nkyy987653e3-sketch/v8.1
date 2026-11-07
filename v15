@@ -1,5 +1,5 @@
--- R1 FARM DEBUG v15 (разбор газ-стены, новый URL)
-local SCRIPT_URL = "https://raw.githubusercontent.com/s1nkyy987653e3-sketch/v8.1/refs/heads/main/v15%20debug"
+-- R1 FARM DEBUG v15 (разбор газ-стены, исправленный URL)
+local SCRIPT_URL = "https://raw.githubusercontent.com/s1nkyy987653e3-sketch/v8.1/refs/heads/main/v15"
 
 -- Kill switch для предыдущего экземпляра
 if getgenv()._R1_BOT then
@@ -19,7 +19,7 @@ getgenv()._R1_BOT = {connections = {}, drawings = {}}
 if queue_on_teleport then
     queue_on_teleport([[
         task.wait(6)
-        loadstring(game:HttpGet("https://raw.githubusercontent.com/s1nkyy987653e3-sketch/v8.1/refs/heads/main/v15%20debug?v=" .. tostring(tick())))()
+        loadstring(game:HttpGet("https://raw.githubusercontent.com/s1nkyy987653e3-sketch/v8.1/refs/heads/main/v15?v=" .. tostring(tick())))()
     ]])
 end
 
