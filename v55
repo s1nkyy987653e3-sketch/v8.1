@@ -1,0 +1,63 @@
+-- R1 FARM DEBUG v55 (проверка Match при смерти)
+local RS = game:GetService("ReplicatedStorage")
+local P = game:GetService("Players")
+local LP = P.LocalPlayer
+
+print("=== [v55] Запущен | " .. os.date("%H:%M:%S") .. " ===")
+
+local lastDead = false
+
+task.spawn(function()
+    while task.wait(0.5) do
+        local char = LP.Character
+        if char then
+            local hum = char:FindFirstChildOfClass("Humanoid")
+            if hum then
+                local isDead = (hum.Health <= 0) or (hum:GetState() == Enum.HumanoidStateType.Dead)
+                if isDead ~= lastDead then
+                    lastDead = isDead
+                    if isDead then
+                        print("[DEATH] Игрок мёртв — проверяем Match")
+                        local tps = RS:FindFirstChild("TPS")
+                        print("[TPS]", tps)
+                        if tps then
+                            local remotes = tps:FindFirstChild("Remotes")
+                            print("[Remotes]", remotes)
+                            if remotes then
+                                for _, obj in ipairs(remotes:GetChildren()) do
+                                    print("  ", obj.ClassName, obj.Name)
+                                end
+                                local match = remotes:FindFirstChild("Match")
+                                print("[Match]", match, match and match.ClassName)
+                                if match then
+                                    print("[TEST] Match:FireServer('Menu')")
+                                    local ok, err = pcall(function() match:FireServer("Menu") end)
+                                    print("[TEST] result:", ok, tostring(err))
+                                end
+                            end
+                        end
+                    else
+                        print("[DEATH] Игрок жив")
+                    end
+                end
+            end
+        end
+    end
+end)
+
+task.spawn(function()
+    while task.wait(3) do
+        local char = LP.Character
+        if char then
+            local hum = char:FindFirstChildOfClass("Humanoid")
+            local hrp = char:FindFirstChild("HumanoidRootPart")
+            if hum and hrp then
+                print(string.format("[P] %s | hp=%d | pos=(%d,%d,%d)",
+                    tostring(hum:GetState()), math.floor(hum.Health),
+                    math.floor(hrp.Position.X), math.floor(hrp.Position.Y), math.floor(hrp.Position.Z)))
+            end
+        end
+    end
+end)
+
+print("=== v55 готов ===")
