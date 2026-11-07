@@ -1,85 +1,137 @@
--- R1 FARM DEBUG v13 (точные пути + размер Ring + без flood)
+-- R1 FARM BOT v1 (ESP + Zone Indicator)
 local SCRIPT_URL = "https://raw.githubusercontent.com/s1nkyy987653e3-sketch/v8.1/refs/heads/main/v7%20debug"
 
 if queue_on_teleport then
     queue_on_teleport([[
         task.wait(6)
-        loadstring(game:HttpGet("https://raw.githubusercontent.com/s1nkyy987653e3-sketch/v8.1/refs/heads/main/v7%20debug"))()
+        loadstring(game:HttpGet("https://raw.githubusercontent.com/s1nkyy987653e3-sketch/v8.1/refs/heads/main/v7%20debug?v=" .. tostring(tick())))()
     ]])
-    print("[QUEUE] ok")
 end
 
 local P = game:GetService("Players")
 local W = game:GetService("Workspace")
 local LP = P.LocalPlayer
+local RS = game:GetService("RunService")
+local CAM = W.CurrentCamera
 
-print("=== [v13] Запущен | " .. os.date("%H:%M:%S") .. " ===")
+print("=== [BOT v1] Запущен | " .. os.date("%H:%M:%S") .. " ===")
 
--- 1. Точные пути к Ring/RingIn/GAS_1/gas_2/HW_RING (раз в 5 сек)
-task.spawn(function()
-    while task.wait(5) do
-        local names = {"Ring", "RingIn", "GAS_1", "gas_2", "HW_RING"}
-        print("[FIND]")
-        for _, obj in ipairs(W:GetDescendants()) do
-            for _, n in ipairs(names) do
-                if obj.Name == n then
-                    local pos = Vector3.zero
-                    local size = Vector3.zero
-                    if obj:IsA("BasePart") then
-                        pos = obj.Position
-                        size = obj.Size
-                    elseif obj:IsA("Model") then
-                        local ok, p = pcall(function() return obj:GetPivot().Position end)
-                        if ok then pos = p end
-                    end
-                    print(string.format("  %s | %s | pos=(%.1f,%.1f,%.1f) | size=(%.1f,%.1f,%.1f) | path=%s",
-                        obj.ClassName, obj.Name,
-                        pos.X, pos.Y, pos.Z,
-                        size.X, size.Y, size.Z,
-                        obj:GetFullName()))
+-- ==== Конфиг ====
+local ZONE_CENTER = Vector3.new(0, 900, 3750)
+local ZONE_RADIUS = 22  -- из Ring.Size.X / 2
+local ESP_RANGE = 5000   -- макс. дистанция отрисовки
+local ESP_COLOR = Color3.fromRGB(255, 0, 0)
+local ESP_FONT = Enum.Font.SourceSansBold
+local ESP_SIZE = 14
+
+-- ==== Drawing ====
+local drawings = {}  -- [player] = {text=..., line=...}
+local zoneText = Drawing.new("Text")
+zoneText.Visible = false
+zoneText.Size = 18
+zoneText.Font = Enum.Font.SourceSansBold
+zoneText.Outline = true
+zoneText.Center = true
+
+-- ==== Утилиты ====
+local function getBots()
+    local list = {}
+    local botsFolder = W:FindFirstChild("TPS_Bots")
+    if botsFolder then
+        for _, m in ipairs(botsFolder:GetChildren()) do
+            if m:IsA("Model") then
+                local hum = m:FindFirstChildOfClass("Humanoid")
+                local hrp = m:FindFirstChild("HumanoidRootPart")
+                if hum and hrp and hum.Health > 0 then
+                    table.insert(list, {model = m, hum = hum, hrp = hrp})
                 end
             end
         end
     end
-end)
-
--- 2. Все персонажи через GetDescendants (раз в 5 сек)
-task.spawn(function()
-    while task.wait(5) do
-        print("[CHARS]")
-        local found = 0
-        for _, obj in ipairs(W:GetDescendants()) do
-            if obj:IsA("Model") then
-                local hum = obj:FindFirstChildOfClass("Humanoid")
-                local hrp = obj:FindFirstChild("HumanoidRootPart")
-                if hum and hrp then
-                    local isLocal = (obj == LP.Character)
-                    print(string.format("  %s | hp=%d | pos=(%.1f,%.1f,%.1f) | local=%s | path=%s",
-                        obj.Name, math.floor(hum.Health),
-                        hrp.Position.X, hrp.Position.Y, hrp.Position.Z,
-                        tostring(isLocal), obj:GetFullName()))
-                    found = found + 1
+    -- также другие игроки (не боты)
+    for _, plr in ipairs(P:GetPlayers()) do
+        if plr ~= LP then
+            local char = plr.Character
+            if char then
+                local hum = char:FindFirstChildOfClass("Humanoid")
+                local hrp = char:FindFirstChild("HumanoidRootPart")
+                if hum and hrp and hum.Health > 0 then
+                    table.insert(list, {model = char, hum = hum, hrp = hrp, player = plr})
                 end
             end
         end
-        if found == 0 then print("  (нет)") end
     end
-end)
+    return list
+end
 
--- 3. Игрок (раз в 5 сек)
-task.spawn(function()
-    while task.wait(5) do
-        local char = LP.Character
-        if char then
-            local hum = char:FindFirstChildOfClass("Humanoid")
-            local hrp = char:FindFirstChild("HumanoidRootPart")
-            if hum and hrp then
-                print(string.format("[P] %s | hp=%d | pos=(%d,%d,%d)",
-                    tostring(hum:GetState()), math.floor(hum.Health),
-                    math.floor(hrp.Position.X), math.floor(hrp.Position.Y), math.floor(hrp.Position.Z)))
+local function worldToScreen(pos)
+    local sp, onScreen = CAM:WorldToViewportPoint(pos)
+    if onScreen then
+        return Vector2.new(sp.X, sp.Y)
+    end
+    return nil
+end
+
+-- ==== Основной цикл ====
+RS.RenderStepped:Connect(function()
+    -- 1. Отрисовка ботов
+    local bots = getBots()
+    local seen = {}
+    for _, b in ipairs(bots) do
+        local hrpPos = b.hrp.Position
+        local dist = (hrpPos - LP.Character.HumanoidRootPart.Position).Magnitude
+        if dist <= ESP_RANGE then
+            local screen = worldToScreen(hrpPos + Vector3.new(0, 2.5, 0))
+            if screen then
+                local key = b.model
+                seen[key] = true
+                if not drawings[key] then
+                    local t = Drawing.new("Text")
+                    t.Size = ESP_SIZE
+                    t.Font = ESP_FONT
+                    t.Outline = true
+                    t.Center = true
+                    t.Color = ESP_COLOR
+                    local l = Drawing.new("Line")
+                    l.Thickness = 1
+                    l.Color = ESP_COLOR
+                    l.Transparency = 0.7
+                    drawings[key] = {text = t, line = l}
+                end
+                local d = drawings[key]
+                d.text.Position = screen
+                d.text.Text = string.format("%s [%d] %dm",
+                    b.model.Name, math.floor(b.hum.Health), math.floor(dist))
+                d.text.Visible = true
+                -- линия от низа экрана к игроку
+                d.line.From = Vector2.new(CAM.ViewportSize.X / 2, CAM.ViewportSize.Y)
+                d.line.To = screen
+                d.line.Visible = true
             end
+        end
+    end
+    -- скрыть тех, кого не видно
+    for key, d in pairs(drawings) do
+        if not seen[key] then
+            d.text.Visible = false
+            d.line.Visible = false
+        end
+    end
+
+    -- 2. Индикатор зоны
+    local char = LP.Character
+    if char then
+        local hrp = char:FindFirstChild("HumanoidRootPart")
+        if hrp then
+            local distToCenter = (Vector3.new(hrp.Position.X, 0, hrp.Position.Z) - Vector3.new(ZONE_CENTER.X, 0, ZONE_CENTER.Z)).Magnitude
+            local inZone = distToCenter <= ZONE_RADIUS
+            zoneText.Text = string.format("ЗОНА: %s | %.1fм до центра",
+                inZone and "✅ ВНУТРИ" or "❌ СНАРУЖИ", distToCenter)
+            zoneText.Color = inZone and Color3.fromRGB(0, 255, 0) or Color3.fromRGB(255, 0, 0)
+            zoneText.Position = Vector2.new(CAM.ViewportSize.X / 2, 30)
+            zoneText.Visible = true
         end
     end
 end)
 
-print("=== v13 готов ===")
+print("=== BOT v1 готов. ESP + зона активны. ===")
