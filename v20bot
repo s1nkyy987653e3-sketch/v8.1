@@ -1,4 +1,4 @@
--- R1 FARM BOT v20 (ESP + авто-респавн + kill switch, fix Font)
+-- R1 FARM BOT v20 (ESP + авто-респавн, без Font)
 local SCRIPT_URL = "https://raw.githubusercontent.com/s1nkyy987653e3-sketch/v8.1/refs/heads/main/v20bot"
 
 if getgenv()._R1_BOT then
@@ -12,13 +12,7 @@ if getgenv()._R1_BOT then
     end)
     getgenv()._R1_BOT = nil
 end
-getgenv()._R1_BOT = {
-    connections = {},
-    drawings = {},
-    lastDead = false,
-    autoRespawn = true,
-    lastRespawnAttempt = 0,
-}
+getgenv()._R1_BOT = {connections = {}, drawings = {}, lastDead = false, autoRespawn = true, lastRespawnAttempt = 0}
 
 if queue_on_teleport then
     queue_on_teleport([[
