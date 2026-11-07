@@ -1,0 +1,72 @@
+-- R1 FARM DEBUG v17 (DeathScreen + авто-респавн)
+local SCRIPT_URL = "https://raw.githubusercontent.com/s1nkyy987653e3-sketch/v8.1/refs/heads/main/v17"
+
+if getgenv()._R1_BOT then
+    pcall(function()
+        for _, c in ipairs(getgenv()._R1_BOT.connections or {}) do
+            pcall(function() c:Disconnect() end)
+        end
+        for _, d in pairs(getgenv()._R1_BOT.drawings or {}) do
+            pcall(function() d:Remove() end)
+        end
+    end)
+    getgenv()._R1_BOT = nil
+end
+getgenv()._R1_BOT = {connections = {}, drawings = {}}
+
+if queue_on_teleport then
+    queue_on_teleport([[
+        task.wait(6)
+        loadstring(game:HttpGet("https://raw.githubusercontent.com/s1nkyy987653e3-sketch/v8.1/refs/heads/main/v17?v=" .. tostring(tick())))()
+    ]])
+end
+
+local P = game:GetService("Players")
+local LP = P.LocalPlayer
+
+print("=== [v17] Запущен | " .. os.date("%H:%M:%S") .. " ===")
+
+-- 1. Мониторинг DeathScreen
+task.spawn(function()
+    local lastState = false
+    while task.wait(1) do
+        local pg = LP:FindFirstChild("PlayerGui")
+        if pg then
+            local death = pg:FindFirstChild("R1_DeathScreen")
+            local isDead = death ~= nil and death.Enabled ~= false
+            if isDead ~= lastState then
+                lastState = isDead
+                if isDead then
+                    print("[DEATH] DeathScreen появился!")
+                    -- Разбор всех кнопок
+                    for _, obj in ipairs(death:GetDescendants()) do
+                        if obj:IsA("TextButton") then
+                            print(string.format("  [BTN] %s | text=%s | visible=%s | path=%s",
+                                obj.Name, tostring(obj.Text), tostring(obj.Visible), obj:GetFullName()))
+                        end
+                    end
+                else
+                    print("[DEATH] DeathScreen исчез (респавн)")
+                end
+            end
+        end
+    end
+end)
+
+-- 2. Игрок (коротко)
+task.spawn(function()
+    while task.wait(3) do
+        local char = LP.Character
+        if char then
+            local hum = char:FindFirstChildOfClass("Humanoid")
+            local hrp = char:FindFirstChild("HumanoidRootPart")
+            if hum and hrp then
+                print(string.format("[P] %s | hp=%d | pos=(%d,%d,%d)",
+                    tostring(hum:GetState()), math.floor(hum.Health),
+                    math.floor(hrp.Position.X), math.floor(hrp.Position.Y), math.floor(hrp.Position.Z)))
+            end
+        end
+    end
+end)
+
+print("=== v17 готов ===")
