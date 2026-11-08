@@ -1,5 +1,5 @@
--- R1 FARM BOT v61 (ESP + уклонение + авто-PlayAgain + авто-старт)
--- Исправлено: согласованные проверки Y, без возврата в меню из лобби
+-- R1 FARM BOT v60 (ESP + уклонение + авто-PlayAgain + авто-старт)
+-- Фикс: queue_on_teleport (cache bust вынесен в переменную)
 local SCRIPT_URL = "https://raw.githubusercontent.com/s1nkyy987653e3-sketch/v8.1/refs/heads/main/v60"
 
 if getgenv()._R1_BOT then
@@ -25,11 +25,14 @@ getgenv()._R1_BOT = {
     lastStart = 0,
 }
 
+-- ФИКС: cache bust в переменной, а не внутри строки
 if queue_on_teleport then
+    local _cacheBust = tostring(tick())
     queue_on_teleport([[
         task.wait(6)
-        loadstring(game:HttpGet("https://raw.githubusercontent.com/s1nkyy987653e3-sketch/v8.1/refs/heads/main/v61?v=" .. tostring(tick())))()
+        loadstring(game:HttpGet("https://raw.githubusercontent.com/s1nkyy987653e3-sketch/v8.1/refs/heads/main/v60?v=]] .. _cacheBust .. [["))()
     ]])
+    print("[QUEUE] Зарегистрирован перезапуск после телепорта")
 end
 
 local P = game:GetService("Players")
@@ -39,7 +42,7 @@ local RStorage = game:GetService("ReplicatedStorage")
 local LP = P.LocalPlayer
 local CAM = W.CurrentCamera
 
-print("=== [BOT v61] Запущен | " .. os.date("%H:%M:%S") .. " ===")
+print("=== [BOT v60] Запущен | " .. os.date("%H:%M:%S") .. " ===")
 
 local function getMatch()
     local tps = RStorage:FindFirstChild("TPS")
@@ -54,7 +57,6 @@ local function getMenu()
     return r1:FindFirstChild("Menu")
 end
 
--- Проверка: в главном меню или нет (по кнопке Store / Battle Pass)
 local function isInMainMenu()
     local pg = LP:FindFirstChild("PlayerGui")
     if not pg then return false end
@@ -129,12 +131,11 @@ local function worldToScreen(pos)
     return nil
 end
 
--- sendMenu: только в матче (isInMatch), не в лобби
 local function sendMenu()
     local match = getMatch()
     if not match then return false end
     if not getgenv()._R1_BOT.autoFarm then return false end
-    if not isInMatch() then return false end  -- единая проверка
+    if not isInMatch() then return false end
     local now = tick()
     if now - getgenv()._R1_BOT.lastMenuSent < 2 then return false end
     getgenv()._R1_BOT.lastMenuSent = now
@@ -148,7 +149,6 @@ local function sendMenu()
     end
 end
 
--- sendQueue: только в главном меню (R1_Menu есть)
 local function sendQueue()
     local menu = getMenu()
     if not menu then return false end
@@ -171,7 +171,7 @@ local function tryEvade(lpChar, lpHrp, targets)
     if not getgenv()._R1_BOT.evade then return end
     if not getMatch() then return end
     if isInMainMenu() then return end
-    if not isInMatch() then return end  -- единая проверка
+    if not isInMatch() then return end
     local hum = lpChar:FindFirstChildOfClass("Humanoid")
     if not hum then return end
     local nearest = nil
@@ -265,7 +265,7 @@ RS.RenderStepped:Connect(function()
                 local pg = LP:FindFirstChild("PlayerGui")
                 local death = pg and pg:FindFirstChild("R1_DeathScreen")
                 if death and death.Enabled then
-                    sendMenu()  -- sendMenu сам проверит isInMatch
+                    sendMenu()
                 end
                 if lpHrp then
                     tryEvade(lpChar, lpHrp, targets)
@@ -305,7 +305,7 @@ end
 getgenv()._R1_BOT.manualPlayAgain = function() sendMenu() end
 getgenv()._R1_BOT.manualStart = function() sendQueue() end
 
-print("=== [BOT v61] готов ===")
+print("=== [BOT v60] готов ===")
 print("ESP: ON | Фарм: ON | Уклонение: ON | Авто-старт: ON (только в главном меню)")
 print("Команды:")
 print("  getgenv()._R1_BOT.toggleFarm()")
