@@ -119,17 +119,17 @@ local function worldToScreen(pos)
     return nil
 end
 
--- sendMenu: только в матче (Y > 10), не в лобби (Y < 10)
 local function sendMenu()
     local match = getMatch()
     if not match then return false end
     if not getgenv()._R1_BOT.autoFarm then return false end
-    -- Проверка: в матче (Y > 10) или в лобби (Y < 10)?
+    -- Проверка: в матче (Y > 50) или в лобби (Y < 50)?
     local char = LP.Character
     if char then
         local hrp = char:FindFirstChild("HumanoidRootPart")
-        if hrp and hrp.Position.Y < 10 then
-            -- Лобби — не вызываем Menu
+        if not hrp then return false end  -- персонаж не загружен — не вызываем
+        if hrp.Position.Y < 50 then
+            -- Лобби (Y < 50) — не вызываем Menu
             return false
         end
     end
