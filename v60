@@ -1,4 +1,4 @@
--- R1 FARM BOT v60 (ESP + уклонение + авто-PlayAgain + авто-старт только в меню)
+-- R1 FARM BOT v60 (ESP + уклонение + авто-PlayAgain + авто-старт, без возврата в меню из лобби)
 local SCRIPT_URL = "https://raw.githubusercontent.com/s1nkyy987653e3-sketch/v8.1/refs/heads/main/v60"
 
 if getgenv()._R1_BOT then
@@ -60,7 +60,6 @@ local function isInMainMenu()
     local r1menu = pg:FindFirstChild("R1_Menu")
     if not r1menu then return false end
     if r1menu.Enabled == false then return false end
-    -- Уникальные кнопки меню
     local store = r1menu:FindFirstChild("Store", true)
     if store and store:IsA("GuiObject") and store.Visible then return true end
     local battlePass = r1menu:FindFirstChild("Battle Pass", true)
@@ -120,10 +119,20 @@ local function worldToScreen(pos)
     return nil
 end
 
+-- sendMenu: только в матче (Y > 10), не в лобби (Y < 10)
 local function sendMenu()
     local match = getMatch()
     if not match then return false end
     if not getgenv()._R1_BOT.autoFarm then return false end
+    -- Проверка: в матче (Y > 10) или в лобби (Y < 10)?
+    local char = LP.Character
+    if char then
+        local hrp = char:FindFirstChild("HumanoidRootPart")
+        if hrp and hrp.Position.Y < 10 then
+            -- Лобби — не вызываем Menu
+            return false
+        end
+    end
     local now = tick()
     if now - getgenv()._R1_BOT.lastMenuSent < 2 then return false end
     getgenv()._R1_BOT.lastMenuSent = now
@@ -137,11 +146,15 @@ local function sendMenu()
     end
 end
 
+-- sendQueue: только в главном меню (R1_Menu есть)
 local function sendQueue()
     local menu = getMenu()
     if not menu then return false end
     if not getgenv()._R1_BOT.autoStart then return false end
-    if not isInMainMenu() then return false end
+    -- Проверка: в главном меню (R1_Menu есть) или в лобби (R1_Menu нет)?
+    local pg = LP:FindFirstChild("PlayerGui")
+    local r1menu = pg and pg:FindFirstChild("R1_Menu")
+    if not r1menu then return false end  -- лобби — не вызываем Queue
     local now = tick()
     if now - getgenv()._R1_BOT.lastStart < 5 then return false end
     getgenv()._R1_BOT.lastStart = now
@@ -159,6 +172,8 @@ local function tryEvade(lpChar, lpHrp, targets)
     if not getgenv()._R1_BOT.evade then return end
     if not getMatch() then return end
     if isInMainMenu() then return end
+    -- Проверка: в лобби (Y < 10) — не уклоняемся
+    if lpHrp.Position.Y < 10 then return end
     local hum = lpChar:FindFirstChildOfClass("Humanoid")
     if not hum then return end
     local nearest = nil
@@ -252,11 +267,15 @@ RS.RenderStepped:Connect(function()
                 local pg = LP:FindFirstChild("PlayerGui")
                 local death = pg and pg:FindFirstChild("R1_DeathScreen")
                 if death and death.Enabled then
-                    sendMenu()
+                    -- Только в матче (Y > 10), не в лобби
+                    if lpHrp and lpHrp.Position.Y > 10 then
+                        sendMenu()
+                    end
                 end
                 if lpHrp then
                     tryEvade(lpChar, lpHrp, targets)
                 end
+                -- Только в главном меню (R1_Menu есть), не в лобби
                 if isInMainMenu() then
                     sendQueue()
                 end
