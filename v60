@@ -49,6 +49,23 @@ local CAM = W.CurrentCamera
 print("=== [BOT v60] Запущен | " .. os.date("%H:%M:%S") .. " ===")
 print("fireproximityprompt:", fireproximityprompt)
 
+-- ================= КОНСТАНТЫ ESP =================
+local ESP_RANGE = 5000
+local DANGER_RANGE = 100
+local EVADE_RANGE = 80
+local ESP_COLOR = Color3.fromRGB(255, 50, 50)
+local DANGER_COLOR = Color3.fromRGB(255, 0, 0)
+local EVADE_COLOR = Color3.fromRGB(255, 150, 0)
+local ESP_SIZE = 14
+
+local drawings = {}
+local statusText = Drawing.new("Text")
+statusText.Visible = false
+statusText.Size = 18
+statusText.Outline = true
+statusText.Center = true
+
+-- ================= УТИЛИТЫ =================
 local function getMatch()
     local tps = RStorage:FindFirstChild("TPS")
     if not tps then return nil end
@@ -56,6 +73,7 @@ local function getMatch()
     if not remotes then return nil end
     return remotes:FindFirstChild("Match")
 end
+
 local function getMenu()
     local r1 = RStorage:FindFirstChild("R1Remotes")
     if not r1 then return nil end
@@ -75,6 +93,41 @@ local function isInMainMenu()
     local crates = r1menu:FindFirstChild("Crates", true)
     if crates and crates:IsA("GuiObject") and crates.Visible then return true end
     return false
+end
+
+local function getTargets()
+    local list = {}
+    local bots = W:FindFirstChild("TPS_Bots")
+    if bots then
+        for _, m in ipairs(bots:GetChildren()) do
+            if m:IsA("Model") then
+                local hum = m:FindFirstChildOfClass("Humanoid")
+                local hrp = m:FindFirstChild("HumanoidRootPart")
+                if hum and hrp and hum.Health > 0 then
+                    table.insert(list, {model = m, hum = hum, hrp = hrp})
+                end
+            end
+        end
+    end
+    for _, plr in ipairs(P:GetPlayers()) do
+        if plr ~= LP then
+            local char = plr.Character
+            if char then
+                local hum = char:FindFirstChildOfClass("Humanoid")
+                local hrp = char:FindFirstChild("HumanoidRootPart")
+                if hum and hrp and hum.Health > 0 then
+                    table.insert(list, {model = char, hum = hum, hrp = hrp})
+                end
+            end
+        end
+    end
+    return list
+end
+
+local function worldToScreen(pos)
+    local sp, onScreen = CAM:WorldToViewportPoint(pos)
+    if onScreen then return Vector2.new(sp.X, sp.Y) end
+    return nil
 end
 
 -- ================= ТИП ОРУЖИЯ =================
@@ -175,12 +228,6 @@ local function getLootItems()
     end
     scan(W)
     return items
-end
-
-local function worldToScreen(pos)
-    local sp, onScreen = CAM:WorldToViewportPoint(pos)
-    if onScreen then return Vector2.new(sp.X, sp.Y) end
-    return nil
 end
 
 -- ФИКС: pickupLoot с fireproximityprompt или InputHoldBegin/End
