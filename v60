@@ -1,5 +1,5 @@
--- R1 FARM BOT v63 (ESP + уклонение + авто-PlayAgain + авто-старт + умный лут с лимитом патронов)
-local SCRIPT_URL = "https://raw.githubusercontent.com/s1nkyy987653e3-sketch/v8.1/refs/heads/main/v63"
+-- R1 FARM BOT v60 (ESP + уклонение + авто-PlayAgain + авто-старт + умный лут)
+local SCRIPT_URL = "https://raw.githubusercontent.com/s1nkyy987653e3-sketch/v8.1/refs/heads/main/v60"
 
 if getgenv()._R1_BOT then
     pcall(function()
@@ -22,7 +22,7 @@ getgenv()._R1_BOT = {
     autoLoot = true,
     lootRadius = 150,
     lootPickupDist = 5,
-    maxAmmoPerWeapon = 100,      -- НОВОЕ: максимум патронов на 1 оружие
+    maxAmmoPerWeapon = 100,
     lastMenuSent = 0,
     lastEvade = 0,
     lastStart = 0,
@@ -34,7 +34,7 @@ if queue_on_teleport then
     local _cacheBust = tostring(tick())
     queue_on_teleport([[
         task.wait(6)
-        loadstring(game:HttpGet("https://raw.githubusercontent.com/s1nkyy987653e3-sketch/v8.1/refs/heads/main/v63?v=]] .. _cacheBust .. [["))()
+        loadstring(game:HttpGet("https://raw.githubusercontent.com/s1nkyy987653e3-sketch/v8.1/refs/heads/main/v60?v=]] .. _cacheBust .. [["))()
     ]])
     print("[QUEUE] Зарегистрирован перезапуск после телепорта")
 end
@@ -46,7 +46,8 @@ local RStorage = game:GetService("ReplicatedStorage")
 local LP = P.LocalPlayer
 local CAM = W.CurrentCamera
 
-print("=== [BOT v63] Запущен | " .. os.date("%H:%M:%S") .. " ===")
+print("=== [BOT v60] Запущен | " .. os.date("%H:%M:%S") .. " ===")
+print("fireproximityprompt:", fireproximityprompt)
 
 local function getMatch()
     local tps = RStorage:FindFirstChild("TPS")
@@ -76,7 +77,7 @@ local function isInMainMenu()
     return false
 end
 
--- ================= ОПРЕДЕЛЕНИЕ ТИПА ОРУЖИЯ =================
+-- ================= ТИП ОРУЖИЯ =================
 local function getWeaponTypeFromName(name)
     local n = string.lower(name)
     if string.find(n, "ak") or string.find(n, "akmesh") then return "AK47" end
@@ -90,7 +91,6 @@ local function getWeaponTypeFromName(name)
     return nil
 end
 
--- Что уже есть в руках
 local function getHeldWeaponType()
     local char = LP.Character
     if not char then return nil end
@@ -105,7 +105,6 @@ local function getHeldWeaponType()
     return nil
 end
 
--- Что уже есть в Backpack (оружие + патроны)
 local function getBackpackItems()
     local backpack = LP:FindFirstChild("Backpack")
     if not backpack then return {} end
@@ -113,76 +112,51 @@ local function getBackpackItems()
     for _, obj in ipairs(backpack:GetChildren()) do
         if obj:IsA("Tool") or obj:IsA("Model") then
             local t = getWeaponTypeFromName(obj.Name)
-            if t then
-                items[t] = (items[t] or 0) + 1
-            end
+            if t then items[t] = (items[t] or 0) + 1 end
         end
     end
     return items
 end
 
--- Что уже есть (в руках + в backpack)
 local function getInventory()
     local inv = {}
     local held = getHeldWeaponType()
     if held then inv[held] = (inv[held] or 0) + 1 end
     local bp = getBackpackItems()
-    for k, v in pairs(bp) do
-        inv[k] = (inv[k] or 0) + v
-    end
+    for k, v in pairs(bp) do inv[k] = (inv[k] or 0) + v end
     return inv
 end
 
--- Количество оружий у игрока (для лимита патронов)
 local function getWeaponCount(inventory)
     local count = 0
     for _, t in ipairs({"AK47", "Sniper", "M4", "Shotgun", "Pistol"}) do
-        if inventory[t] and inventory[t] > 0 then
-            count = count + inventory[t]
-        end
+        if inventory[t] and inventory[t] > 0 then count = count + inventory[t] end
     end
     return count
 end
 
--- Нужно ли собирать этот лут?
 local function shouldLoot(item, inventory)
-    local name = item.model.Name
-    local t = getWeaponTypeFromName(name)
-    if not t then
-        return true
-    end
-    -- Оружие: не собираем, если уже есть
+    local t = getWeaponTypeFromName(item.model.Name)
+    if not t then return true end
     if t == "AK47" or t == "Sniper" or t == "M4" or t == "Shotgun" or t == "Pistol" then
-        if inventory[t] and inventory[t] > 0 then
-            return false
-        end
+        if inventory[t] and inventory[t] > 0 then return false end
         return true
     end
-    -- Патроны: собираем, пока не наберём maxAmmoPerWeapon на каждое оружие
     if t == "Ammo" then
         local weaponCount = getWeaponCount(inventory)
-        if weaponCount == 0 then
-            -- Нет оружия — патроны не нужны
-            return false
-        end
+        if weaponCount == 0 then return false end
         local maxAmmo = weaponCount * getgenv()._R1_BOT.maxAmmoPerWeapon
-        local currentAmmo = inventory["Ammo"] or 0
-        if currentAmmo >= maxAmmo then
-            return false
-        end
+        if (inventory["Ammo"] or 0) >= maxAmmo then return false end
         return true
     end
-    -- Аптечки / броня: собираем, если < 3
     if t == "Med" or t == "Armor" then
-        if inventory[t] and inventory[t] >= 3 then
-            return false
-        end
+        if inventory[t] and inventory[t] >= 3 then return false end
         return true
     end
     return true
 end
 
--- ================= ПОИСК ЛУТА =================
+-- ================= ЛУТ =================
 local function getLootItems()
     local items = {}
     local function scan(parent)
@@ -191,15 +165,11 @@ local function getLootItems()
                 local prompt = obj:FindFirstChildOfClass("ProximityPrompt")
                 if prompt then
                     local root = obj:FindFirstChild("HumanoidRootPart") or obj:FindFirstChild("Handle") or (obj:IsA("BasePart") and obj) or obj:FindFirstChildWhichIsA("BasePart")
-                    if root then
-                        table.insert(items, {model = obj, prompt = prompt, pos = root.Position})
-                    end
+                    if root then table.insert(items, {model = obj, prompt = prompt, pos = root.Position}) end
                 end
             end
             if obj:IsA("Folder") or obj:IsA("Model") then
-                if not obj:FindFirstChildOfClass("Humanoid") then
-                    scan(obj)
-                end
+                if not obj:FindFirstChildOfClass("Humanoid") then scan(obj) end
             end
         end
     end
@@ -213,7 +183,21 @@ local function worldToScreen(pos)
     return nil
 end
 
--- ================= АВТО-ЛУТ =================
+-- ФИКС: pickupLoot с fireproximityprompt или InputHoldBegin/End
+local function pickupLoot(prompt)
+    if not prompt then return false end
+    local ok = pcall(function()
+        if fireproximityprompt then
+            fireproximityprompt(prompt)
+        else
+            prompt:InputHoldBegin()
+            task.wait(0.1)
+            prompt:InputHoldEnd()
+        end
+    end)
+    return ok
+end
+
 local function tryLoot(lpChar, lpHrp, targets)
     if not getgenv()._R1_BOT.autoLoot then return end
     if not getMatch() then return end
@@ -226,7 +210,6 @@ local function tryLoot(lpChar, lpHrp, targets)
     getgenv()._R1_BOT.lastLoot = now
 
     local inventory = getInventory()
-
     local current = getgenv()._R1_BOT.currentLoot
     if current and current.model and current.model.Parent then
         if not shouldLoot(current, inventory) then
@@ -234,7 +217,7 @@ local function tryLoot(lpChar, lpHrp, targets)
         else
             local dist = (current.pos - lpHrp.Position).Magnitude
             if dist <= getgenv()._R1_BOT.lootPickupDist then
-                pcall(function() fireproximityprompt(current.prompt) end)
+                pickupLoot(current.prompt)
                 getgenv()._R1_BOT.currentLoot = nil
                 return
             elseif dist <= getgenv()._R1_BOT.lootRadius then
@@ -264,9 +247,8 @@ local function tryLoot(lpChar, lpHrp, targets)
         local t = getWeaponTypeFromName(nearest.model.Name) or "?"
         local ammoInfo = ""
         if t == "Ammo" then
-            local weaponCount = getWeaponCount(inventory)
-            local maxAmmo = weaponCount * getgenv()._R1_BOT.maxAmmoPerWeapon
-            ammoInfo = string.format(" [патроны: %d/%d]", inventory["Ammo"] or 0, maxAmmo)
+            local wc = getWeaponCount(inventory)
+            ammoInfo = string.format(" [патроны: %d/%d]", inventory["Ammo"] or 0, wc * getgenv()._R1_BOT.maxAmmoPerWeapon)
         end
         print(string.format("[LOOT] Иду к %s (%s) (%.0f м)%s", nearest.model.Name, t, nearestDist, ammoInfo))
     end
@@ -325,10 +307,7 @@ local function tryEvade(lpChar, lpHrp, targets)
     local nearestDist = math.huge
     for _, t in ipairs(targets) do
         local d = (t.hrp.Position - lpHrp.Position).Magnitude
-        if d < nearestDist then
-            nearestDist = d
-            nearest = t
-        end
+        if d < nearestDist then nearestDist = d; nearest = t end
     end
     if not nearest or nearestDist > EVADE_RANGE or nearestDist < 5 then return end
     local now = tick()
@@ -336,9 +315,7 @@ local function tryEvade(lpChar, lpHrp, targets)
     getgenv()._R1_BOT.lastEvade = now
     local dir = (lpHrp.Position - nearest.hrp.Position)
     dir = Vector3.new(dir.X, 0, dir.Z)
-    if dir.Magnitude < 0.1 then
-        dir = Vector3.new(math.random(-1,1), 0, math.random(-1,1))
-    end
+    if dir.Magnitude < 0.1 then dir = Vector3.new(math.random(-1,1), 0, math.random(-1,1)) end
     dir = dir.Unit
     hum:MoveTo(lpHrp.Position + dir * 50)
     print(string.format("[EVADE] Бегу от %s (%.0f м)", nearest.model.Name, nearestDist))
@@ -413,18 +390,13 @@ RS.RenderStepped:Connect(function()
             if not isDead then
                 local pg = LP:FindFirstChild("PlayerGui")
                 local death = pg and pg:FindFirstChild("R1_DeathScreen")
-                if death and death.Enabled then
-                    sendMenu()
-                end
+                if death and death.Enabled then sendMenu() end
                 if lpHrp then
                     local nearestEnemy = nil
                     local nearestEnemyDist = math.huge
                     for _, t in ipairs(targets) do
                         local d = (t.hrp.Position - lpHrp.Position).Magnitude
-                        if d < nearestEnemyDist then
-                            nearestEnemyDist = d
-                            nearestEnemy = t
-                        end
+                        if d < nearestEnemyDist then nearestEnemyDist = d; nearestEnemy = t end
                     end
                     if nearestEnemy and nearestEnemyDist <= EVADE_RANGE then
                         tryEvade(lpChar, lpHrp, targets)
@@ -432,9 +404,7 @@ RS.RenderStepped:Connect(function()
                         tryLoot(lpChar, lpHrp, targets)
                     end
                 end
-                if isInMainMenu() then
-                    sendQueue()
-                end
+                if isInMainMenu() then sendQueue() end
             end
         end
     end
@@ -474,7 +444,7 @@ end
 getgenv()._R1_BOT.manualPlayAgain = function() sendMenu() end
 getgenv()._R1_BOT.manualStart = function() sendQueue() end
 
-print("=== [BOT v63] готов ===")
+print("=== [BOT v60] готов ===")
 print("ESP: ON | Фарм: ON | Уклонение: ON | Лут: ON | Авто-старт: ON")
 print("PlayAgain: только при hp=0")
 print("Умный лут: не собирает дубликаты оружия")
