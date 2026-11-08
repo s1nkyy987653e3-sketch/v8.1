@@ -1,5 +1,5 @@
 -- R1 FARM BOT v60 (ESP + уклонение + авто-PlayAgain + авто-старт)
--- Фикс: Menu только при hp = 0 (не в лобби)
+-- Фикс: sendQueue проверяет RemoteFunction, sendMenu только при hp=0
 local SCRIPT_URL = "https://raw.githubusercontent.com/s1nkyy987653e3-sketch/v8.1/refs/heads/main/v60"
 
 if getgenv()._R1_BOT then
@@ -71,10 +71,61 @@ local function isInMainMenu()
     return false
 end
 
+local ESP_RANGE = 5000
+local DANGER_RANGE = 100
+local EVADE_RANGE = 80
+local ESP_COLOR = Color3.fromRGB(255, 50, 50)
+local DANGER_COLOR = Color3.fromRGB(255, 0, 0)
+local EVADE_COLOR = Color3.fromRGB(255, 150, 0)
+local ESP_SIZE = 14
+
+local drawings = {}
+local statusText = Drawing.new("Text")
+statusText.Visible = false
+statusText.Size = 18
+statusText.Outline = true
+statusText.Center = true
+
+local function getTargets()
+    local list = {}
+    local bots = W:FindFirstChild("TPS_Bots")
+    if bots then
+        for _, m in ipairs(bots:GetChildren()) do
+            if m:IsA("Model") then
+                local hum = m:FindFirstChildOfClass("Humanoid")
+                local hrp = m:FindFirstChild("HumanoidRootPart")
+                if hum and hrp and hum.Health > 0 then
+                    table.insert(list, {model = m, hum = hum, hrp = hrp})
+                end
+            end
+        end
+    end
+    for _, plr in ipairs(P:GetPlayers()) do
+        if plr ~= LP then
+            local char = plr.Character
+            if char then
+                local hum = char:FindFirstChildOfClass("Humanoid")
+                local hrp = char:FindFirstChild("HumanoidRootPart")
+                if hum and hrp and hum.Health > 0 then
+                    table.insert(list, {model = char, hum = hum, hrp = hrp})
+                end
+            end
+        end
+    end
+    return list
+end
+
+local function worldToScreen(pos)
+    local sp, onScreen = CAM:WorldToViewportPoint(pos)
+    if onScreen then return Vector2.new(sp.X, sp.Y) end
+    return nil
+end
+
 -- ФИКС: sendMenu — ТОЛЬКО при hp = 0
 local function sendMenu()
     local match = getMatch()
     if not match then return false end
+    if not match:IsA("RemoteEvent") then return false end
     if not getgenv()._R1_BOT.autoFarm then return false end
     -- ТОЛЬКО при hp = 0
     local char = LP.Character
@@ -82,7 +133,7 @@ local function sendMenu()
     local hum = char:FindFirstChildOfClass("Humanoid")
     if not hum then return false end
     if hum.Health > 0 then
-        -- Живой (лобби/матч) — не вызываем Menu
+        -- Живой — не вызываем Menu
         return false
     end
     local now = tick()
@@ -98,9 +149,14 @@ local function sendMenu()
     end
 end
 
+-- ФИКС: sendQueue — проверка RemoteFunction
 local function sendQueue()
     local menu = getMenu()
     if not menu then return false end
+    if not menu:IsA("RemoteFunction") then
+        print("[START] Menu не RemoteFunction, пропуск")
+        return false
+    end
     if not getgenv()._R1_BOT.autoStart then return false end
     if not isInMainMenu() then return false end
     local now = tick()
@@ -122,7 +178,7 @@ local function tryEvade(lpChar, lpHrp, targets)
     if isInMainMenu() then return end
     local hum = lpChar:FindFirstChildOfClass("Humanoid")
     if not hum then return end
-    if hum.Health <= 0 then return end  -- мёртв — не уклоняемся
+    if hum.Health <= 0 then return end
     local nearest = nil
     local nearestDist = math.huge
     for _, t in ipairs(targets) do
@@ -214,7 +270,7 @@ RS.RenderStepped:Connect(function()
                 local pg = LP:FindFirstChild("PlayerGui")
                 local death = pg and pg:FindFirstChild("R1_DeathScreen")
                 if death and death.Enabled then
-                    -- ТОЛЬКО при hp = 0 (sendMenu сам проверит)
+                    -- sendMenu сам проверит hp=0
                     sendMenu()
                 end
                 if lpHrp then
