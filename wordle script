@@ -1,0 +1,2086 @@
+-- [[ Rscripts Risk Notice ]]
+-- This script is not verified by rscripts.net. Deal with caution.
+--
+-- Stay safe:
+--   • Never log in on unofficial Roblox sites or lookalike domains.
+--   • Real Roblox links use roblox.com (check the .com ending).
+--   • Treat fake Roblox login / "claim reward" pages as phishing.
+-- [[ End Rscripts Risk Notice ]]
+
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+local old = playerGui:FindFirstChild("P_WordBot")
+if old then
+    local stop = old:FindFirstChild("Stop")
+    if stop and stop:IsA("BindableEvent") then
+        stop:Fire()
+    else
+        old:Destroy()
+    end
+end
+
+local gui = Instance.new("ScreenGui")
+gui.Name = "P_WordBot"
+gui.ResetOnSpawn = false
+gui.Parent = playerGui
+
+local stopEvent = Instance.new("BindableEvent")
+stopEvent.Name = "Stop"
+stopEvent.Parent = gui
+
+local running = true
+local enabled = false
+local connections = {}
+local used = {}
+local lastWord
+local submitted = false
+local previousFocus = false
+local feedbackConnection
+local generation = 0
+
+-- Режимы: "human" | "medium" | "instant"
+local MODES = { "human", "medium", "instant" }
+local MODE_LABELS = {
+    human = "ЧЕЛОВЕК",
+    medium = "СРЕДНЕ",
+    instant = "БЫСТРО",
+}
+local mode = "human"
+
+-- === ЧЕЛОВЕЧЕСКАЯ ЭМУЛЯЦИЯ ВВОДА ===
+local HUMAN = {
+    minCharDelay   = 0.035,
+    maxCharDelay   = 0.160,
+
+    speedMoodMin   = 0.65,
+    speedMoodMax   = 1.45,
+
+    stallChance    = 0.10,
+    stallExtra     = {0.35, 1.20},
+
+    typoChanceMin  = 0.02,
+    typoChanceMax  = 0.14,
+    typoFixDelay   = {0.10, 0.40},
+
+    preTypeDelay   = {0.20, 1.10},
+    focusDelay     = {0.15, 0.55},
+    retryDelay     = {0.40, 1.30},
+    clearCharDelay = {0.015, 0.070},
+    afterClear     = {0.04, 0.20},
+
+    burstChance         = 0.18,
+    burstFastMultiplier = 0.35,
+    burstStopDelay      = {0.25, 1.10},
+    burstBackspace      = {2, 4},
+
+    -- «Средний» режим: короткие ровные паузы без опечаток/burst
+    mediumCharDelay = {0.010, 0.030},
+    mediumPreDelay  = {0.03, 0.10},
+    mediumAfterClear = {0.01, 0.04},
+    mediumRetryDelay = {0.10, 0.30},
+
+    -- «Быстрый» режим: почти без задержек
+    instantRetryDelay = {0.05, 0.15},
+}
+
+local rng = Random.new(os.clock() * 1000)
+
+local function randFloat(minV, maxV)
+    return minV + rng:NextNumber() * (maxV - minV)
+end
+
+local function randInt(minV, maxV)
+    return rng:NextInteger(minV, maxV)
+end
+
+local function sleep(minV, maxV)
+    task.wait(randFloat(minV, maxV))
+end
+
+local function hasEnterAPI()
+    return type(keypress) == "function" and type(keyrelease) == "function"
+end
+
+local function buildAllowedCodes(letter)
+    local list = words and words[letter]
+    if not list then return nil end
+    local allowed, seen = {}, {}
+    for _, w in ipairs(list) do
+        local second = utf8.offset(w, 2)
+        if second then
+            local firstChar = w:sub(1, second - 1)
+            if firstChar ~= "" and not seen[firstChar] then
+                seen[firstChar] = true
+                local ok, cp = pcall(utf8.codepoint, firstChar)
+                if ok and cp then table.insert(allowed, cp) end
+            end
+        end
+    end
+    if #allowed == 0 then return nil end
+    return allowed
+end
+
+local function dropLastChar(text)
+    if text == "" then return text end
+    local lastStart = utf8.offset(text, -1)
+    if not lastStart then return "" end
+    return text:sub(1, lastStart - 1)
+end
+
+local function ensureChar(box, char)
+    for _ = 1, 2 do
+        local current = box.Text
+        if current:sub(-#char) == char then
+            return true
+        end
+        local ok = pcall(function()
+            box.Text = box.Text .. char
+        end)
+        if not ok then return false end
+        task.wait(0.01)
+    end
+    return box.Text:sub(-#char) == char
+end
+
+-- Очистка поля. В human — посимвольно с рандомом, в остальных — мгновенно.
+local function clearBox(box)
+    if box.Text == "" then return end
+
+    if mode ~= "human" then
+        box.Text = ""
+        return
+    end
+
+    local length = utf8.len(box.Text) or 0
+    if length == 0 then
+        box.Text = ""
+        return
+    end
+
+    local clearMood = randFloat(0.7, 1.4)
+
+    for _ = 1, length do
+        local ok = pcall(function()
+            box.Text = dropLastChar(box.Text)
+        end)
+        if not ok then
+            box.Text = ""
+            return
+        end
+        sleep(
+            HUMAN.clearCharDelay[1] * clearMood,
+            HUMAN.clearCharDelay[2] * clearMood
+        )
+    end
+end
+
+local function humanMaybeTypo(box, allowed, typoChance)
+    if not allowed or rng:NextNumber() >= typoChance then
+        return
+    end
+    local wrong = allowed[rng:NextInteger(1, #allowed)]
+    if not wrong then return end
+
+    local wrongChar = utf8.char(wrong)
+    local before = box.Text
+
+    local ok = pcall(function()
+        box.Text = before .. wrongChar
+    end)
+    if not ok then return end
+
+    if box.Text:sub(-#wrongChar) ~= wrongChar then
+        return
+    end
+
+    sleep(HUMAN.typoFixDelay[1], HUMAN.typoFixDelay[2])
+
+    pcall(function()
+        if box.Text:sub(-#wrongChar) == wrongChar then
+            box.Text = box.Text:sub(1, -#wrongChar - 1)
+        end
+    end)
+
+    sleep(0.03, 0.15)
+end
+
+-- Человеческий набор (burst, опечатки, залипания)
+local function humanTypeHuman(box, text, allowed)
+    local speedMood = randFloat(HUMAN.speedMoodMin, HUMAN.speedMoodMax)
+    local typoChance = randFloat(HUMAN.typoChanceMin, HUMAN.typoChanceMax)
+
+    local chars = {}
+    for _, code in utf8.codes(text) do
+        table.insert(chars, utf8.char(code))
+    end
+
+    local totalLen = #chars
+    if totalLen == 0 then return true end
+
+    local stallAt = nil
+    if rng:NextNumber() < HUMAN.stallChance and totalLen > 1 then
+        stallAt = randInt(2, totalLen)
+    end
+
+    local burstEnabled = totalLen >= 8 and rng:NextNumber() < HUMAN.burstChance
+    local burstStopAt = nil
+    if burstEnabled then
+        burstStopAt = randInt(
+            math.max(2, math.floor(totalLen * 0.35)),
+            math.max(2, math.floor(totalLen * 0.75))
+        )
+        if burstStopAt >= totalLen then
+            burstStopAt = totalLen - 1
+        end
+    end
+    local burstDone = false
+    local burstPhase = burstEnabled and "fast" or "normal"
+
+    local typedCount = 0
+
+    while typedCount < totalLen do
+        local nextIndex = typedCount + 1
+
+        if burstPhase == "fast"
+            and not burstDone
+            and nextIndex >= (burstStopAt or math.huge)
+        then
+            burstDone = true
+            sleep(HUMAN.burstStopDelay[1], HUMAN.burstStopDelay[2])
+
+            local backspaceCount = randInt(
+                HUMAN.burstBackspace[1], HUMAN.burstBackspace[2]
+            )
+            if backspaceCount > typedCount then
+                backspaceCount = typedCount
+            end
+            if backspaceCount < 0 then backspaceCount = 0 end
+
+            for _ = 1, backspaceCount do
+                local ok = pcall(function()
+                    if box.Text ~= "" then
+                        box.Text = dropLastChar(box.Text)
+                    end
+                end)
+                if not ok then break end
+                typedCount = math.max(0, typedCount - 1)
+                sleep(0.04, 0.14)
+            end
+
+            sleep(0.10, 0.35)
+            burstPhase = "normal"
+            speedMood = randFloat(HUMAN.speedMoodMin, HUMAN.speedMoodMax)
+
+            continue
+        end
+
+        humanMaybeTypo(box, allowed, typoChance)
+
+        local char = chars[nextIndex]
+        if not ensureChar(box, char) then
+            return false
+        end
+
+        typedCount = nextIndex
+
+        local delay
+        if burstPhase == "fast" then
+            delay = randFloat(
+                HUMAN.minCharDelay * HUMAN.burstFastMultiplier,
+                HUMAN.maxCharDelay * HUMAN.burstFastMultiplier
+            )
+        else
+            delay = randFloat(
+                HUMAN.minCharDelay * speedMood,
+                HUMAN.maxCharDelay * speedMood
+            )
+        end
+
+        if stallAt == typedCount then
+            delay += randFloat(HUMAN.stallExtra[1], HUMAN.stallExtra[2])
+        end
+
+        task.wait(delay)
+    end
+
+    return box.Text:sub(-#text) == text
+end
+
+-- Средний набор: посимвольно, без опечаток/burst/залипаний, ровные короткие паузы
+local function humanTypeMedium(box, text)
+    for _, code in utf8.codes(text) do
+        local char = utf8.char(code)
+        if not ensureChar(box, char) then
+            return false
+        end
+        sleep(HUMAN.mediumCharDelay[1], HUMAN.mediumCharDelay[2])
+    end
+    return box.Text:sub(-#text) == text
+end
+
+-- Мгновенный набор: вставляем всё слово сразу
+local function humanTypeInstant(box, text)
+    local ok = pcall(function()
+        box.Text = text
+    end)
+    if not ok then return false end
+    return box.Text:sub(-#text) == text
+end
+
+-- Универсальная точка входа
+local function humanType(box, text, allowed)
+    if mode == "instant" then
+        return humanTypeInstant(box, text)
+    elseif mode == "medium" then
+        return humanTypeMedium(box, text)
+    end
+    return humanTypeHuman(box, text, allowed)
+end
+
+local function sortByLengthDesc(list)
+    table.sort(list, function(a, b)
+        local la = utf8.len(a) or #a
+        local lb = utf8.len(b) or #b
+        if la ~= lb then
+            return la > lb
+        end
+        return a < b
+    end)
+    return list
+end
+
+local words = {
+    ["А"] = sortByLengthDesc({
+        "абажур", "абзац", "абрикос", "аванс", "автобус",
+        "автор", "агент", "адрес", "азарт", "айсберг",
+        "акация", "аккорд", "актёр", "аллея", "алмаз",
+        "алфавит", "альбом", "ампула", "ананас", "ангел",
+        "аптека", "арбуз", "арена", "армия", "аромат",
+        "артист", "архив", "астра", "атака", "атлас"
+    }),
+    ["Б"] = sortByLengthDesc({
+        "бабочка", "багаж", "базар", "балкон", "банан",
+        "бандит", "барабан", "барон", "бассейн", "батон",
+        "бегемот", "бедро", "бездна", "белка", "берег",
+        "берёза", "беседа", "библиотека", "билет", "бинокль",
+        "бирка", "бисер", "битва", "благо", "бланк",
+        "блеск", "блин", "блокнот", "блоха", "блуза"
+    }),
+    ["В"] = sortByLengthDesc({
+        "вагон", "ваза", "валенки", "ванна", "варенье",
+        "вата", "вафля", "ведро", "веник", "вертолёт",
+        "весло", "весна", "ветер", "ветка", "вечер",
+        "взгляд", "вилка", "виноград", "витамин", "вишня",
+        "вклад", "вкус", "власть", "внук", "вода",
+        "вожак", "вокзал", "волна", "воробей", "ворота"
+    }),
+    ["Г"] = sortByLengthDesc({
+        "гавань", "газета", "газон", "гайка", "галстук",
+        "гамак", "гараж", "гармонь", "гвоздь", "гвоздика",
+        "герань", "герой", "гитара", "глаз", "глина",
+        "глобус", "глубина", "гнездо", "голубь", "гора",
+        "город", "горох", "горшок", "горчица", "гость",
+        "грабли", "град", "гранит", "гриб", "гроза"
+    }),
+    ["Д"] = sortByLengthDesc({
+        "дача", "дверь", "двигатель", "дворец", "дворник",
+        "девочка", "дед", "декабрь", "делегат", "дельфин",
+        "деревня", "дерево", "десерт", "диван", "диктор",
+        "директор", "дневник", "дождь", "доктор", "дом",
+        "доска", "дорога", "дракон", "друг", "дружба",
+        "дуб", "дупло", "дурак", "душа", "дыня"
+    }),
+    ["Е"] = sortByLengthDesc({
+        "еда", "единство", "единица", "ежевика", "ежедневник",
+        "ель", "енот", "епископ", "ералаш", "ересь",
+        "ерш", "ерунда", "есаул", "естество", "ехидна",
+        "ежата", "ежиха", "ежик", "елка", "емкость",
+        "евангелие", "евнух", "еврей", "егерь", "едок",
+        "ежа", "езда", "ездок", "еле", "елей"
+    }),
+    ["Ё"] = sortByLengthDesc({
+        "ёж", "ёжик", "ёжиться", "ёкать", "ёкающий",
+        "ёлка", "ёлочка", "ёлочный", "ёмкий", "ёмкость",
+        "ёрзать", "ёрник", "ёрничать", "ёрничество", "ёрш",
+        "ёршик", "ёжевечерний", "ёжедневный", "ёжовый", "ёкнутый"
+    }),
+    ["Ж"] = sortByLengthDesc({
+        "жаба", "жабра", "жадина", "жажда", "жакет",
+        "жало", "жалюзи", "жандарм", "жанр", "жаргон",
+        "жаркое", "жасмин", "жвачка", "жезл", "железо",
+        "желоб", "желток", "желудок", "жемчуг", "жена",
+        "жених", "жердь", "жеребец", "жертва", "жест",
+        "жесть", "жетон", "живот", "жилет", "жираф"
+    }),
+    ["З"] = sortByLengthDesc({
+        "забава", "забег", "заблуждение", "забор", "забота",
+        "завал", "заварка", "завеса", "завет", "завод",
+        "завтрак", "завуч", "завязка", "загар", "загиб",
+        "загон", "задор", "задумка", "заём", "зажим",
+        "зайка", "заказ", "закат", "закладка", "закон",
+        "залив", "замок", "запах", "запись", "заря"
+    }),
+    ["И"] = sortByLengthDesc({
+        "ибис", "ива", "ивняк", "иволга", "игла",
+        "иго", "игривость", "идеал", "идея", "идиллия",
+        "идол", "иена", "ижица", "изба", "избушка",
+        "избыток", "известие", "известь", "извив", "извоз",
+        "изгиб", "издание", "изделие", "изжога", "излишек",
+        "измена", "износ", "изобилие", "изумруд", "изюм"
+    }),
+    ["Й"] = sortByLengthDesc({
+        "йемен", "йог", "йога", "йогурт", "йогуртница",
+        "йод", "йодированный", "йодль", "йодосодержащий", "йорк",
+        "йоркшир", "йот", "йота", "йотированный", "йодный",
+        "йодизм", "йодит", "йодистый", "йодоформ", "йошкар-ола"
+    }),
+    ["К"] = sortByLengthDesc({
+        "кабан", "кабель", "кабина", "каблук", "кавалер",
+        "кадка", "кадр", "казна", "казнь", "какао",
+        "калач", "календарь", "калина", "калитка", "камень",
+        "камин", "кампания", "канал", "канат", "карандаш",
+        "карман", "карта", "картина", "картон", "касса",
+        "катер", "каша", "каюта", "квартира", "квас"
+    }),
+    ["Л"] = sortByLengthDesc({
+        "лабаз", "лабиринт", "лава", "лаванда", "лавина",
+        "лавка", "лагерь", "ладонь", "ладья", "лазер",
+        "лазейка", "лайм", "лак", "лакей", "лампа",
+        "ландшафт", "лань", "лапа", "лапша", "ларек",
+        "ласка", "ластик", "ласточка", "латунь", "лауреат",
+        "лачуга", "лебедь", "лев", "легенда", "лед"
+    }),
+    ["М"] = sortByLengthDesc({
+        "мавр", "магистр", "магия", "магма", "мазь",
+        "маис", "майка", "майонез", "майор", "макет",
+        "макушка", "малахит", "малец", "малина", "малыш",
+        "мальва", "маляр", "мама", "мамонт", "манеж",
+        "мания", "мансарда", "марафон", "марка", "марля",
+        "март", "марш", "маска", "масло", "масса"
+    }),
+    ["Н"] = sortByLengthDesc({
+        "набат", "набег", "набросок", "навар", "навес",
+        "навет", "навык", "наган", "нагар", "нагиб",
+        "нагон", "нагорье", "награда", "нагрузка", "надел",
+        "надир", "надой", "надпись", "нажим", "нажива",
+        "наземь", "название", "наив", "накал", "накат",
+        "накипь", "наклон", "накос", "налет", "налив"
+    }),
+    ["О"] = sortByLengthDesc({
+        "обаяние", "обвал", "обед", "обелиск", "оберег",
+        "обида", "обиход", "обкатка", "облако", "облик",
+        "облом", "обман", "обмен", "обморок", "обнова",
+        "обойма", "оборона", "оборот", "обочина", "обработка",
+        "образ", "обрез", "обрыв", "обряд", "обстрел",
+        "обувь", "обух", "обход", "объект", "обыск"
+    }),
+    ["П"] = sortByLengthDesc({
+        "павлин", "пагода", "падеж", "падение", "паёк",
+        "пазуха", "пайка", "пакет", "палас", "палата",
+        "палатка", "палец", "палисад", "палитра", "палка",
+        "палуба", "пальма", "пальто", "памфлет", "память",
+        "панель", "паника", "панно", "пантера", "папа",
+        "папка", "пара", "парад", "парапет", "парик"
+    }),
+    ["Р"] = sortByLengthDesc({
+        "раба", "работа", "рабыня", "рагу", "радар",
+        "радио", "радон", "радуга", "раж", "развал",
+        "развес", "развилка", "развод", "разгар", "раздел",
+        "раздор", "разлив", "размер", "разрез", "разум",
+        "район", "ракета", "ракита", "раковина", "ралли",
+        "рама", "рамка", "рампа", "рана", "ранг"
+    }),
+    ["С"] = sortByLengthDesc({
+        "сабля", "садик", "сажа", "сажень", "сазан",
+        "сайка", "саквояж", "сакля", "салат", "салют",
+        "самба", "самец", "самшит", "сан", "сани",
+        "санитар", "санки", "сапог", "сарай", "саранча",
+        "сарафан", "сарказм", "сатин", "сатира", "сахар",
+        "сбор", "сбруя", "сбыт", "свалка", "свадьба"
+    }),
+    ["Т"] = sortByLengthDesc({
+        "табак", "табло", "табун", "тавро", "таган",
+        "тайга", "тайна", "тайфун", "такса", "такт",
+        "талант", "талер", "талон", "талия", "талисман",
+        "талмуд", "тальк", "тамбур", "таможня", "танец",
+        "танк", "танкер", "тапки", "таран", "тариф",
+        "тарелка", "тату", "тать", "тачка", "таять"
+    }),
+    ["У"] = sortByLengthDesc({
+        "убор", "уборка", "убыток", "увал", "увар",
+        "увоз", "угар", "угода", "угол", "уголёк",
+        "угольник", "угорь", "удав", "удавка", "удалец",
+        "удар", "удача", "удод", "удочка", "удушье",
+        "уезд", "уж", "ужас", "ужин", "уза",
+        "узор", "уйма", "ука", "указ", "уклад"
+    }),
+    ["Ф"] = sortByLengthDesc({
+        "фабрика", "фавн", "фагот", "фазан", "фазис",
+        "файл", "факел", "факт", "факультет", "фалда",
+        "фальц", "фальшь", "фамилия", "фанат", "фанера",
+        "фант", "фара", "фарс", "фартук", "фарфор",
+        "фарш", "фасад", "фасоль", "фасон", "фата",
+        "фауна", "фаэтон", "фаянс", "февраль", "феерия"
+    }),
+    ["Х"] = sortByLengthDesc({
+        "хаба", "хабар", "хаджи", "хаз", "хайло",
+        "халва", "халдей", "халтура", "халцедон", "хамса",
+        "хан", "хана", "ханжа", "ханство", "хаос",
+        "хапуга", "харч", "харя", "хата", "хатка",
+        "хахаль", "хач", "хвала", "хват", "хвоя",
+        "хворост", "хе", "хек", "херес", "херувим"
+    }),
+    ["Ц"] = sortByLengthDesc({
+        "цапля", "царапина", "царедворец", "царство", "цаца",
+        "цацка", "цвель", "цвет", "цветень", "цветник",
+        "цветок", "цедра", "цеж", "цейтнот", "цейхгауз",
+        "целина", "целинник", "целлофан", "целлулоид", "целлюлоза",
+        "целомудрие", "целостность", "цель", "цемент", "цена",
+        "ценз", "цензор", "ценник", "цент", "центр"
+    }),
+    ["Ч"] = sortByLengthDesc({
+        "чабан", "чага", "чадо", "чадра", "чайка",
+        "чайник", "чалма", "чалый", "чародей", "чарка",
+        "чары", "час", "часовня", "частник", "часть",
+        "чахотка", "чаша", "чашка", "чаща", "чаяние",
+        "чей", "чек", "чекан", "челн", "челнок",
+        "чело", "человек", "челюсть", "чемодан", "чемпион"
+    }),
+    ["Ш"] = sortByLengthDesc({
+        "шабаш", "шабот", "шаг", "шайба", "шайка",
+        "шакал", "шалаш", "шалость", "шалфей", "шаман",
+        "шампиньон", "шампунь", "шанец", "шанс", "шансон",
+        "шапка", "шар", "шарада", "шарик", "шариат",
+        "шарж", "шарлатан", "шарманка", "шарнир", "шарф",
+        "шасси", "шатер", "шатун", "шафер", "шафран"
+    }),
+    ["Щ"] = sortByLengthDesc({
+        "щавель", "щавелевый", "щадить", "щебень", "щебет",
+        "щегол", "щедрость", "щека", "щеколда", "щелкун",
+        "щелок", "щелочь", "щелчок", "щель", "щемить",
+        "щенок", "щепа", "щепка", "щепотка", "щербет",
+        "щетина", "щетка", "щечка", "щиколотка", "щип",
+        "щипать", "щипок", "щипцы", "щит", "щиток"
+    }),
+    ["Ъ"] = {},
+    ["Ы"] = {},
+    ["Ь"] = {},
+    ["Э"] = sortByLengthDesc({
+        "эбен", "эвакуация", "эвкалипт", "эволюция", "эврика",
+        "эгида", "эгоизм", "эгрет", "эдельвейс", "эдем",
+        "эквивалент", "экзамен", "экзема", "экзотика", "экипаж",
+        "эклер", "экран", "экскаватор", "экскурс", "эксперт",
+        "экспорт", "экспресс", "эксцесс", "эластик", "элеватор",
+        "элегантность", "элегия", "электрик", "электрод", "элемент"
+    }),
+    ["Ю"] = sortByLengthDesc({
+        "юбилей", "юбка", "юбочка", "ювелир", "юг",
+        "юдоль", "южанин", "южный", "юзист", "юзит",
+        "юй", "юкка", "юкола", "юла", "юлить",
+        "юмор", "юнга", "юнец", "юниор", "юнкер",
+        "юнкор", "юный", "юпитер", "юр", "юра",
+        "юридический", "юрист", "юркий", "юрта", "юс"
+    }),
+    ["Я"] = sortByLengthDesc({
+        "ябеда", "яви", "явка", "явь", "яга",
+        "ягель", "ягнёнок", "ягода", "яд", "ядро",
+        "ядь", "язва", "язык", "язь", "яйла",
+        "яйцо", "як", "яка", "яко", "якорь",
+        "якша", "ял", "ялик", "яма", "ямб",
+        "ямина", "ямка", "январь", "янки", "янтарь"
+    })
+}
+
+local lowerToUpper = {}
+local upperLetters = {}
+local upper = "А Б В Г Д Е Ё Ж З И Й К Л М Н О П Р С Т У Ф Х Ц Ч Ш Щ Ъ Ы Ь Э Ю Я"
+local lower = "а б в г д е ё ж з и й к л м н о п р с т у ф х ц ч ш щ ъ ы ь э ю я"
+
+for letter in upper:gmatch("%S+") do
+    table.insert(upperLetters, letter)
+end
+
+local index = 0
+for letter in lower:gmatch("%S+") do
+    index += 1
+    lowerToUpper[letter] = upperLetters[index]
+end
+
+local function connect(signal, callback)
+    local connection = signal:Connect(callback)
+    table.insert(connections, connection)
+    return connection
+end
+
+local function make(className, parent, properties)
+    local object = Instance.new(className)
+    for key, value in pairs(properties) do
+        object[key] = value
+    end
+    object.Parent = parent
+    return object
+end
+
+local function button(parent, text, position, size)
+    return make("TextButton", parent, {
+        Position = position,
+        Size = size,
+        BackgroundColor3 = Color3.fromRGB(38, 38, 38),
+        BorderSizePixel = 0,
+        Text = text,
+        TextColor3 = Color3.fromRGB(235, 235, 235),
+        Font = Enum.Font.Gotham,
+        TextSize = 14,
+        TextWrapped = true
+    })
+end
+
+local main = make("Frame", gui, {
+    Position = UDim2.fromOffset(12, 75),
+    Size = UDim2.fromOffset(300, 300),
+    BackgroundColor3 = Color3.fromRGB(18, 18, 18),
+    BorderSizePixel = 0,
+    Active = true
+})
+
+local header = make("TextLabel", main, {
+    Size = UDim2.new(1, -84, 0, 38),
+    BackgroundColor3 = Color3.fromRGB(28, 28, 28),
+    BorderSizePixel = 0,
+    Text = "  WORDS | БОТ",
+    TextColor3 = Color3.fromRGB(235, 235, 235),
+    Font = Enum.Font.GothamBold,
+    TextSize = 14,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    Active = true
+})
+
+local minimize = button(
+    main, "—", UDim2.new(1, -84, 0, 0), UDim2.fromOffset(42, 38)
+)
+local close = button(
+    main, "X", UDim2.new(1, -42, 0, 0), UDim2.fromOffset(42, 38)
+)
+local onButton = button(
+    main, "ВКЛ", UDim2.fromOffset(12, 48), UDim2.fromOffset(132, 38)
+)
+local offButton = button(
+    main, "ПАУЗА", UDim2.fromOffset(156, 48), UDim2.fromOffset(132, 38)
+)
+local resetButton = button(
+    main, "Сбросить слова", UDim2.fromOffset(12, 92), UDim2.new(1, -24, 0, 38)
+)
+local modeButton = button(
+    main, "РЕЖИМ: " .. MODE_LABELS[mode],
+    UDim2.fromOffset(12, 136), UDim2.new(1, -24, 0, 34)
+)
+
+local status = make("TextLabel", main, {
+    Position = UDim2.fromOffset(12, 178),
+    Size = UDim2.new(1, -24, 0, 110),
+    BackgroundTransparency = 1,
+    Text = "Включи бота и дождись своего хода.\n"
+        .. "F6 — вкл/пауза | F7 — режим | RightShift — свернуть\n"
+        .. "ПАУЗА сохраняет список использованных слов.",
+    TextColor3 = Color3.fromRGB(175, 175, 175),
+    Font = Enum.Font.Gotham,
+    TextSize = 12,
+    TextWrapped = true
+})
+
+local reopen = button(
+    gui, "WORDS", UDim2.fromOffset(12, 75), UDim2.fromOffset(76, 40)
+)
+reopen.Visible = false
+
+local function setVisible(value)
+    main.Visible = value
+    reopen.Visible = not value
+end
+
+local function updateButtons()
+    onButton.BackgroundColor3 = enabled
+        and Color3.fromRGB(65, 65, 65)
+        or Color3.fromRGB(38, 38, 38)
+
+    offButton.BackgroundColor3 = not enabled
+        and Color3.fromRGB(65, 65, 65)
+        or Color3.fromRGB(38, 38, 38)
+
+    modeButton.Text = "РЕЖИМ: " .. (MODE_LABELS[mode] or "?")
+end
+
+local function cycleMode()
+    local idx = 1
+    for i, m in ipairs(MODES) do
+        if m == mode then idx = i; break end
+    end
+    idx = idx % #MODES + 1
+    mode = MODES[idx]
+    updateButtons()
+    status.Text = "Режим: " .. (MODE_LABELS[mode] or "?")
+end
+
+local function getParts()
+    local ui = playerGui:FindFirstChild("WordGameUI")
+    local canvas = ui and ui:FindFirstChild("Canvas")
+    local match = canvas and canvas:FindFirstChild("Match")
+    if not match then return end
+
+    local box = match:FindFirstChild("TypingCapture")
+    local tiles = match:FindFirstChild("WordTiles")
+    local first = tiles and tiles:FindFirstChild("Letter1")
+    local glyph = first and first:FindFirstChild("Glyph")
+    local feedback = match:FindFirstChild("Feedback")
+
+    if box and box:IsA("TextBox")
+        and glyph and glyph:IsA("TextLabel") then
+        return box, glyph, feedback
+    end
+end
+
+local function getLetter(glyph)
+    local text = glyph.Text:match("^%s*(.-)%s*$")
+    return lowerToUpper[text] or text
+end
+
+-- Единственная функция выбора: самое КОРОТКОЕ неиспользованное слово.
+local function shortestUnused(letter)
+    local list = words[letter]
+    if not list then return nil end
+
+    local best = nil
+    local bestLen = math.huge
+    for _, word in ipairs(list) do
+        if not used[word] then
+            local len = utf8.len(word) or #word
+            if len < bestLen then
+                bestLen = len
+                best = word
+            end
+        end
+    end
+    return best
+end
+
+local nextWord = shortestUnused
+
+-- Общий «набор и отправка» выбранного слова (учитывает режим).
+local function typeAndSubmit(box, glyph, letter, word, label)
+    local secondByte = utf8.offset(word, 2)
+    if not secondByte then
+        submitted = true
+        status.Text = "Ошибка слова в словаре."
+        return
+    end
+
+    local rest = word:sub(secondByte)
+
+    used[word] = true
+    lastWord = word
+    submitted = true
+    status.Text = label .. ": " .. word
+        .. "\nРежим: " .. (MODE_LABELS[mode] or "?")
+        .. "\nОжидаю ответ игры."
+
+    if mode == "human" then
+        sleep(HUMAN.preTypeDelay[1], HUMAN.preTypeDelay[2])
+    elseif mode == "medium" then
+        sleep(HUMAN.mediumPreDelay[1], HUMAN.mediumPreDelay[2])
+    end
+
+    pcall(function()
+        box:CaptureFocus()
+    end)
+
+    if mode == "human" then
+        sleep(0.06, 0.22)
+    end
+
+    clearBox(box)
+
+    if mode == "human" then
+        sleep(HUMAN.afterClear[1], HUMAN.afterClear[2])
+    elseif mode == "medium" then
+        sleep(HUMAN.mediumAfterClear[1], HUMAN.mediumAfterClear[2])
+    end
+
+    local allowed = buildAllowedCodes(letter)
+    if not humanType(box, rest, allowed) then
+        box.Text = rest
+    end
+
+    -- Enter
+    if hasEnterAPI() then
+        local pressed = pcall(keypress, 0x0D)
+        task.wait(randFloat(0.03, 0.07))
+        local released = pcall(keyrelease, 0x0D)
+
+        if not pressed or not released then
+            pcall(function() box:ReleaseFocus() end)
+        end
+    else
+        pcall(function() box:ReleaseFocus() end)
+    end
+end
+
+local function attempt()
+    if not running or not enabled then return end
+
+    local box, glyph = getParts()
+    if not box or UserInputService:GetFocusedTextBox() ~= box then
+        status.Text = "Жду твоего хода и фокуса поля."
+        return
+    end
+
+    if not hasEnterAPI() then
+        enabled = false
+        generation += 1
+        updateButtons()
+        status.Text = "Executor не поддерживает keypress/keyrelease."
+        return
+    end
+
+    local letter = getLetter(glyph)
+    local word = nextWord(letter)
+
+    if not word then
+        submitted = true
+        status.Text = "Нет слов на «" .. tostring(letter)
+            .. "».\nВ новом раунде нажми «Сбросить слова»."
+        return
+    end
+
+    typeAndSubmit(box, glyph, letter, word, "Пробую")
+end
+
+local function attemptShortest()
+    if not running or not enabled then return end
+
+    local box, glyph = getParts()
+    if not box or UserInputService:GetFocusedTextBox() ~= box then
+        status.Text = "Жду твоего хода и фокуса поля."
+        return
+    end
+
+    if not hasEnterAPI() then
+        enabled = false
+        generation += 1
+        updateButtons()
+        status.Text = "Executor не поддерживает keypress/keyrelease."
+        return
+    end
+
+    local letter = getLetter(glyph)
+    local word = shortestUnused(letter)
+
+    if not word then
+        submitted = true
+        status.Text = "Нет коротких слов на «" .. tostring(letter)
+            .. "».\nНажми «Сбросить слова»."
+        return
+    end
+
+    typeAndSubmit(box, glyph, letter, word, "Отклонено. Пишу короткое")
+end
+
+local function retryDelayByMode()
+    if mode == "human" then
+        return randFloat(HUMAN.retryDelay[1], HUMAN.retryDelay[2])
+    elseif mode == "medium" then
+        return randFloat(HUMAN.mediumRetryDelay[1], HUMAN.mediumRetryDelay[2])
+    end
+    return randFloat(HUMAN.instantRetryDelay[1], HUMAN.instantRetryDelay[2])
+end
+
+local function bindFeedback(feedback)
+    if feedbackConnection then
+        feedbackConnection:Disconnect()
+        feedbackConnection = nil
+    end
+
+    if not feedback or not feedback:IsA("TextLabel") then return end
+
+    local function check()
+        if not enabled or not submitted or not feedback.Visible then return end
+        if not feedback.Text:find("не подходит", 1, true) then return end
+
+        submitted = false
+        local token = generation
+        status.Text = "Отклонено: " .. tostring(lastWord)
+            .. ". Стираю и пишу короткое..."
+
+        task.delay(retryDelayByMode(), function()
+            if running and enabled and generation == token and not submitted then
+                attemptShortest()
+            end
+        end)
+    end
+
+    feedbackConnection = feedback:GetPropertyChangedSignal("Visible"):Connect(check)
+    table.insert(connections, feedbackConnection)
+end
+
+local function turnOn()
+    if enabled or not running then return end
+
+    if not hasEnterAPI() then
+        status.Text = "Executor не поддерживает keypress/keyrelease."
+        return
+    end
+
+    generation += 1
+    enabled = true
+    submitted = false
+    previousFocus = false
+    updateButtons()
+    status.Text = "ВКЛ. Режим: " .. (MODE_LABELS[mode] or "?")
+        .. "\nСписок использованных слов сохранён."
+end
+
+local function pause()
+    generation += 1
+    enabled = false
+    submitted = false
+    updateButtons()
+    status.Text = "ПАУЗА. Использованные слова сохранены."
+end
+
+local function resetWords()
+    generation += 1
+    table.clear(used)
+    lastWord = nil
+
+    local box = getParts()
+    if enabled and box and UserInputService:GetFocusedTextBox() == box then
+        submitted = false
+        local token = generation
+        status.Text = "Список сброшен. Пробую слово..."
+
+        task.delay(randFloat(0.2, 0.6), function()
+            if running and enabled and generation == token and not submitted then
+                attempt()
+            end
+        end)
+    else
+        submitted = false
+        status.Text = "Список слов сброшен. Жду следующий ход."
+    end
+end
+
+connect(onButton.Activated, turnOn)
+connect(offButton.Activated, pause)
+connect(resetButton.Activated, resetWords)
+connect(modeButton.Activated, cycleMode)
+connect(minimize.Activated, function()
+    setVisible(false)
+end)
+connect(reopen.Activated, function()
+    setVisible(true)
+end)
+
+connect(UserInputService.InputBegan, function(input)
+    if UserInputService:GetFocusedTextBox() then return end
+
+    if input.KeyCode == Enum.KeyCode.F6 then
+        if enabled then
+            pause()
+        else
+            turnOn()
+        end
+    elseif input.KeyCode == Enum.KeyCode.F7 then
+        cycleMode()
+    elseif input.KeyCode == Enum.KeyCode.RightShift then
+        setVisible(not main.Visible)
+    end
+end)
+
+local dragInput
+local dragStart
+local startPosition
+
+connect(header.InputBegan, function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+        dragInput = input
+        dragStart = input.Position
+        startPosition = main.Position
+    end
+end)
+
+connect(UserInputService.InputChanged, function(input)
+    if not dragInput then return end
+
+    local mouseDrag =
+        dragInput.UserInputType == Enum.UserInputType.MouseButton1
+        and input.UserInputType == Enum.UserInputType.MouseMovement
+
+    if mouseDrag or input == dragInput then
+        local delta = input.Position - dragStart
+        main.Position = UDim2.new(
+            startPosition.X.Scale,
+            startPosition.X.Offset + delta.X,
+            startPosition.Y.Scale,
+            startPosition.Y.Offset + delta.Y
+        )
+    end
+end)
+
+connect(UserInputService.InputEnded, function(input)
+    if input == dragInput then
+        dragInput = nil
+    end
+end)
+
+local function stop()
+    if not running then return end
+
+    generation += 1
+    enabled = false
+    running = false
+
+    if type(keyrelease) == "function" then
+        pcall(keyrelease, 0x0D)
+    end
+
+    for _, connection in ipairs(connections) do
+        connection:Disconnect()
+    end
+
+    gui:Destroy()
+end
+
+connect(close.Activated, stop)
+connect(stopEvent.Event, stop)
+
+updateButtons()
+
+task.spawn(function()
+    local boundFeedback
+
+    while running do
+        local box, _, feedback = getParts()
+
+        if feedback ~= boundFeedback then
+            boundFeedback = feedback
+            bindFeedback(feedback)
+        end
+
+        if enabled then
+            local focused = box ~= nil
+                and UserInputService:GetFocusedTextBox() == box
+
+            if focused and not previousFocus then
+                submitted = false
+                local token = generation
+
+                if mode == "human" then
+                    sleep(HUMAN.focusDelay[1], HUMAN.focusDelay[2])
+                end
+
+                if running and enabled and generation == token and not submitted then
+                    attempt()
+                end
+            elseif not focused and previousFocus then
+                submitted = false
+                status.Text = "Жду следующего хода."
+            end
+
+            previousFocus = focused
+        else
+            previousFocus = false
+        end
+
+        task.wait(0.1)
+    end
+end)
+
+-- ============================================================
+-- ЛОГ НЕПРАВИЛЬНЫХ СЛОВ (вставляется в конец скрипта)
+-- ============================================================
+do
+    -- Защита от повторной вставки
+    if _G.__P_WordBot_ErrorLog then
+        pcall(function() _G.__P_WordBot_ErrorLog:Destroy() end)
+        _G.__P_WordBot_ErrorLog = nil
+    end
+
+    local Players = game:GetService("Players")
+    local player = Players.LocalPlayer
+    local playerGui = player:WaitForChild("PlayerGui")
+
+    local botGui = playerGui:FindFirstChild("P_WordBot")
+    if not botGui then
+        warn("[WordBot] Главный GUI P_WordBot не найден — логгер не запущен.")
+        return
+    end
+
+    -- Хранилище неправильных слов: массив записей {letter=..., word=..., time=...}
+    local wrongEntries = {}
+    local seenWrong = {} -- ключ "letter|word" -> true, чтобы не дублировать
+    local lastSent = nil -- {letter=..., word=...}
+
+    -- ==== Перехват отправки слова ====
+    -- Мы не можем «хукать» локальные функции напрямую, поэтому
+    -- перехватываем через общий Feedback: когда бот пишет слово и игра
+    -- отвечает «не подходит», мы уже знаем последнее отправленное слово.
+    --
+    -- Чтобы знать, ЧТО бот отправил, читаем box.Text в момент, когда
+    -- Feedback становится Visible = true. В этот момент box.Text ещё
+    -- содержит отправленное слово (игра не успела очистить).
+    --
+    -- Но надёжнее — перехватить сам факт «бот нажал Enter». Для этого
+    -- обернём глобальный keypress, если он есть.
+    local originalKeypress = keypress
+    local originalKeyrelease = keyrelease
+
+    local function currentLetterAndWord()
+        local ui = playerGui:FindFirstChild("WordGameUI")
+        local canvas = ui and ui:FindFirstChild("Canvas")
+        local match = canvas and canvas:FindFirstChild("Match")
+        if not match then return nil, nil end
+
+        local tiles = match:FindFirstChild("WordTiles")
+        local first = tiles and tiles:FindFirstChild("Letter1")
+        local glyph = first and first:FindFirstChild("Glyph")
+        local box = match:FindFirstChild("TypingCapture")
+
+        local letter = nil
+        if glyph and glyph:IsA("TextLabel") then
+            local raw = glyph.Text:match("^%s*(.-)%s*$")
+            if raw and raw ~= "" then
+                letter = raw
+            end
+        end
+
+        local word = nil
+        if box and box:IsA("TextBox") and box.Text ~= "" then
+            -- В поле только «хвост» без первой буквы; восстановим полное слово
+            if letter then
+                word = letter .. box.Text
+            else
+                word = box.Text
+            end
+        end
+
+        return letter, word
+    end
+
+    -- Оборачиваем keypress: когда бот жмёт Enter (0x0D), запоминаем слово
+    if type(originalKeypress) == "function" then
+        keypress = function(code, ...)
+            if code == 0x0D then
+                local letter, word = currentLetterAndWord()
+                if word and word ~= "" then
+                    lastSent = { letter = letter, word = word }
+                end
+            end
+            return originalKeypress(code, ...)
+        end
+    end
+
+    -- ==== Слежение за Feedback ====
+    local feedbackConnection
+    local boundFeedback
+
+    local function recordWrong(letter, word)
+        if not word or word == "" then return end
+        local key = tostring(letter) .. "|" .. tostring(word)
+        if seenWrong[key] then return end
+        seenWrong[key] = true
+        table.insert(wrongEntries, {
+            letter = letter or "?",
+            word = word,
+            time = os.date("%H:%M:%S"),
+        })
+        refreshLogList()
+    end
+
+    local function checkFeedback(feedback)
+        if not feedback or not feedback:IsA("TextLabel") then return end
+        if not feedback.Visible then return end
+
+        local txt = feedback.Text or ""
+        if txt:find("не подходит", 1, true)
+            or txt:lower():find("неверн", 1, true)
+            or txt:lower():find("ошибк", 1, true)
+        then
+            if lastSent then
+                recordWrong(lastSent.letter, lastSent.word)
+                lastSent = nil
+            else
+                -- Если keypress не оборачивался — попробуем вытащить из поля
+                local letter, word = currentLetterAndWord()
+                recordWrong(letter, word)
+            end
+        end
+    end
+
+    local function bindFeedbackWatcher()
+        local ui = playerGui:FindFirstChild("WordGameUI")
+        local canvas = ui and ui:FindFirstChild("Canvas")
+        local match = canvas and canvas:FindFirstChild("Match")
+        local feedback = match and match:FindFirstChild("Feedback")
+
+        if feedback ~= boundFeedback then
+            if feedbackConnection then
+                feedbackConnection:Disconnect()
+                feedbackConnection = nil
+            end
+            boundFeedback = feedback
+            if feedback and feedback:IsA("TextLabel") then
+                feedbackConnection = feedback:GetPropertyChangedSignal("Visible"):Connect(function()
+                    checkFeedback(feedback)
+                end)
+            end
+        end
+    end
+
+    -- ==== GUI лога ====
+    local logGui = Instance.new("ScreenGui")
+    logGui.Name = "P_WordBot_ErrorLog"
+    logGui.ResetOnSpawn = false
+    logGui.Parent = playerGui
+
+    local logFrame = Instance.new("Frame")
+    logFrame.Name = "LogFrame"
+    logFrame.Position = UDim2.fromOffset(330, 75)
+    logFrame.Size = UDim2.fromOffset(300, 300)
+    logFrame.BackgroundColor3 = Color3.fromRGB(18, 18, 18)
+    logFrame.BorderSizePixel = 0
+    logFrame.Visible = false
+    logFrame.Parent = logGui
+
+    local logHeader = Instance.new("TextLabel")
+    logHeader.Size = UDim2.new(1, -42, 0, 34)
+    logHeader.BackgroundColor3 = Color3.fromRGB(28, 28, 28)
+    logHeader.BorderSizePixel = 0
+    logHeader.Text = "  ЛОГ ОШИБОК"
+    logHeader.TextColor3 = Color3.fromRGB(235, 235, 235)
+    logHeader.Font = Enum.Font.GothamBold
+    logHeader.TextSize = 13
+    logHeader.TextXAlignment = Enum.TextXAlignment.Left
+    logHeader.Parent = logFrame
+
+    local logClose = Instance.new("TextButton")
+    logClose.Size = UDim2.fromOffset(42, 34)
+    logClose.Position = UDim2.new(1, -42, 0, 0)
+    logClose.BackgroundColor3 = Color3.fromRGB(38, 38, 38)
+    logClose.BorderSizePixel = 0
+    logClose.Text = "X"
+    logClose.TextColor3 = Color3.fromRGB(235, 235, 235)
+    logClose.Font = Enum.Font.Gotham
+    logClose.TextSize = 14
+    logClose.Parent = logFrame
+
+    local copyBtn = Instance.new("TextButton")
+    copyBtn.Size = UDim2.fromOffset(132, 30)
+    copyBtn.Position = UDim2.fromOffset(12, 42)
+    copyBtn.BackgroundColor3 = Color3.fromRGB(38, 38, 38)
+    copyBtn.BorderSizePixel = 0
+    copyBtn.Text = "Копировать"
+    copyBtn.TextColor3 = Color3.fromRGB(235, 235, 235)
+    copyBtn.Font = Enum.Font.Gotham
+    copyBtn.TextSize = 13
+    copyBtn.Parent = logFrame
+
+    local clearBtn = Instance.new("TextButton")
+    clearBtn.Size = UDim2.fromOffset(132, 30)
+    clearBtn.Position = UDim2.fromOffset(156, 42)
+    clearBtn.BackgroundColor3 = Color3.fromRGB(38, 38, 38)
+    clearBtn.BorderSizePixel = 0
+    clearBtn.Text = "Очистить"
+    clearBtn.TextColor3 = Color3.fromRGB(235, 235, 235)
+    clearBtn.Font = Enum.Font.Gotham
+    clearBtn.TextSize = 13
+    clearBtn.Parent = logFrame
+
+    local scroll = Instance.new("ScrollingFrame")
+    scroll.Position = UDim2.fromOffset(12, 80)
+    scroll.Size = UDim2.new(1, -24, 1, -92)
+    scroll.BackgroundColor3 = Color3.fromRGB(24, 24, 24)
+    scroll.BorderSizePixel = 0
+    scroll.ScrollBarThickness = 6
+    scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+    scroll.Parent = logFrame
+
+    local listLayout = Instance.new("UIListLayout")
+    listLayout.Padding = UDim.new(0, 2)
+    listLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    listLayout.Parent = scroll
+
+    local countLabel = Instance.new("TextLabel")
+    countLabel.Position = UDim2.fromOffset(12, 312)
+    countLabel.Size = UDim2.new(1, -24, 0, 20)
+    countLabel.BackgroundTransparency = 1
+    countLabel.Text = "Ошибок: 0"
+    countLabel.TextColor3 = Color3.fromRGB(175, 175, 175)
+    countLabel.Font = Enum.Font.Gotham
+    countLabel.TextSize = 12
+    countLabel.TextXAlignment = Enum.TextXAlignment.Left
+    countLabel.Parent = logFrame
+
+    -- Перерисовка списка
+    function refreshLogList()
+        -- Удаляем старые строки
+        for _, child in ipairs(scroll:GetChildren()) do
+            if child:IsA("TextLabel") then
+                child:Destroy()
+            end
+        end
+
+        local y = 0
+        for i, entry in ipairs(wrongEntries) do
+            local row = Instance.new("TextLabel")
+            row.Size = UDim2.new(1, -8, 0, 22)
+            row.Position = UDim2.fromOffset(4, y)
+            row.BackgroundTransparency = 1
+            row.Text = string.format(
+                "%d) [%s] «%s» — %s",
+                i, entry.letter, entry.word, entry.time
+            )
+            row.TextColor3 = Color3.fromRGB(255, 180, 180)
+            row.Font = Enum.Font.Gotham
+            row.TextSize = 12
+            row.TextXAlignment = Enum.TextXAlignment.Left
+            row.TextTruncate = Enum.TextTruncate.AtEnd
+            row.LayoutOrder = i
+            row.Parent = scroll
+            y += 24
+        end
+
+        scroll.CanvasSize = UDim2.new(0, 0, 0, y)
+        countLabel.Text = "Ошибок: " .. #wrongEntries
+    end
+
+    -- Кнопки
+    logClose.Activated:Connect(function()
+        logFrame.Visible = false
+    end)
+
+    copyBtn.Activated:Connect(function()
+        local lines = {}
+        for i, entry in ipairs(wrongEntries) do
+            table.insert(lines, string.format(
+                "%d) [%s] %s", i, entry.letter, entry.word
+            ))
+        end
+        local text = table.concat(lines, "\n")
+
+        local copied = false
+        if type(setclipboard) == "function" then
+            copied = pcall(setclipboard, text)
+        end
+        if not copied and type(toclipboard) == "function" then
+            copied = pcall(toclipboard, text)
+        end
+
+        if copied then
+            copyBtn.Text = "Скопировано!"
+        else
+            copyBtn.Text = "Нет доступа к буферу"
+        end
+        task.delay(1.5, function()
+            copyBtn.Text = "Копировать"
+        end)
+    end)
+
+    clearBtn.Activated:Connect(function()
+        table.clear(wrongEntries)
+        table.clear(seenWrong)
+        lastSent = nil
+        refreshLogList()
+        clearBtn.Text = "Очищено"
+        task.delay(1.0, function()
+            clearBtn.Text = "Очистить"
+        end)
+    end)
+
+    -- Перетаскивание окна лога
+    local dragInput, dragStart, startPos
+    logHeader.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then
+            dragInput = input
+            dragStart = input.Position
+            startPos = logFrame.Position
+        end
+    end)
+    UserInputService.InputChanged:Connect(function(input)
+        if not dragInput then return end
+        local mouseDrag =
+            dragInput.UserInputType == Enum.UserInputType.MouseButton1
+            and input.UserInputType == Enum.UserInputType.MouseMovement
+        if mouseDrag or input == dragInput then
+            local delta = input.Position - dragStart
+            logFrame.Position = UDim2.new(
+                startPos.X.Scale,
+                startPos.X.Offset + delta.X,
+                startPos.Y.Scale,
+                startPos.Y.Offset + delta.Y
+            )
+        end
+    end)
+    UserInputService.InputEnded:Connect(function(input)
+        if input == dragInput then
+            dragInput = nil
+        end
+    end)
+
+-- ============================================================
+-- ЛОГ ОШИБОК (без «уже использовано в этом матче»)
+-- + память слов противников (если они есть в UI)
+-- Вставляется в самый конец скрипта.
+-- ============================================================
+do
+    if _G.__P_WordBot_ErrorLog then
+        pcall(function() _G.__P_WordBot_ErrorLog:Destroy() end)
+        _G.__P_WordBot_ErrorLog = nil
+    end
+
+    local Players = game:GetService("Players")
+    local UIS = game:GetService("UserInputService")
+    local player = Players.LocalPlayer
+    local playerGui = player:WaitForChild("PlayerGui")
+
+    local botGui = playerGui:FindFirstChild("P_WordBot")
+    if not botGui then
+        warn("[WordBot] Главный GUI P_WordBot не найден — логгер не запущен.")
+        return
+    end
+
+    -- ===== Хранилища =====
+    local wrongEntries = {}     -- {key, letter, word, reasonList, feedbackList, time}
+    local seenWrong = {}
+
+    local opponentEntries = {}
+    local seenOpponent = {}
+
+    local lastSent = nil        -- {letter, word}
+
+    local skippedUsed = 0       -- сколько раз сработало «уже было»
+
+    -- ===== Причины, которые ИГНОРИРУЕМ полностью =====
+    -- «Уже использовано в этом матче» — не ошибка, не логируем.
+    local function isIgnoredReason(text)
+        if not text or text == "" then return false end
+        local t = text:lower()
+        if t:find("уже", 1, true) then return true end
+        if t:find("было", 1, true) then return true end
+        if t:find("использован", 1, true) then return true end
+        if t:find("повтор", 1, true) then return true end
+        if t:find("раньше", 1, true) then return true end
+        return false
+    end
+
+    -- ===== Классификация причины =====
+    local function classifyFeedback(text)
+        if not text or text == "" then return "неизвестно" end
+        local t = text:lower()
+
+        if t:find("проверяем", 1, true) then return "проверяется" end
+        if t:find("не подходит", 1, true) then return "не подходит" end
+        if t:find("неверн", 1, true) then return "неверная буква" end
+        if t:find("коротк", 1, true) then return "слишком короткое" end
+        if t:find("длинн", 1, true) then return "слишком длинное" end
+        if t:find("нет слова", 1, true) then return "нет в словаре игры" end
+        if t:find("не найдено", 1, true) then return "нет в словаре игры" end
+        if t:find("время", 1, true) or t:find("вышло", 1, true) then
+            return "время вышло"
+        end
+        if t:find("нельзя", 1, true) then return "нельзя" end
+        if t:find("ошибк", 1, true) then return "ошибка" end
+
+        return "иное: " .. text:sub(1, 40)
+    end
+
+    -- ===== Утилиты поиска =====
+    local function getMatch()
+        local ui = playerGui:FindFirstChild("WordGameUI")
+        local canvas = ui and ui:FindFirstChild("Canvas")
+        return canvas and canvas:FindFirstChild("Match")
+    end
+
+    local function currentLetterAndWord()
+        local match = getMatch()
+        if not match then return nil, nil end
+
+        local tiles = match:FindFirstChild("WordTiles")
+        local first = tiles and tiles:FindFirstChild("Letter1")
+        local glyph = first and first:FindFirstChild("Glyph")
+        local box = match:FindFirstChild("TypingCapture")
+
+        local letter = nil
+        if glyph and glyph:IsA("TextLabel") then
+            local raw = glyph.Text:match("^%s*(.-)%s*$")
+            if raw ~= "" then letter = raw end
+        end
+
+        local word = nil
+        if box and box:IsA("TextBox") and box.Text ~= "" then
+            if letter then
+                word = letter .. box.Text
+            else
+                word = box.Text
+            end
+        end
+
+        return letter, word
+    end
+
+    -- ===== Перехват Enter для запоминания отправленного слова =====
+    local originalKeypress = keypress
+    if type(originalKeypress) == "function" then
+        keypress = function(code, ...)
+            if code == 0x0D then
+                local letter, word = currentLetterAndWord()
+                if word and word ~= "" then
+                    lastSent = { letter = letter, word = word }
+                end
+            end
+            return originalKeypress(code, ...)
+        end
+    end
+
+    -- ===== Запись ошибки (с фильтром «уже было») =====
+    local function recordWrong(letter, word, feedbackText)
+        if not word or word == "" then return end
+
+        -- Пропускаем игнорируемые причины
+        if isIgnoredReason(feedbackText) then
+            skippedUsed += 1
+            updateCounts()
+            return
+        end
+
+        local reason = classifyFeedback(feedbackText)
+
+        -- «Проверяем…» — не ошибка
+        if reason == "проверяется" then return end
+
+        local key = tostring(letter) .. "|" .. tostring(word)
+
+        -- Если запись с этим словом уже есть — добавляем причину, если новая
+        for _, e in ipairs(wrongEntries) do
+            if e.key == key then
+                if not e.reasons[reason] then
+                    e.reasons[reason] = true
+                    e.reasonList = e.reasonList .. "; " .. reason
+                end
+                e.feedbackList = (e.feedbackList ~= "" and
+                    (e.feedbackList .. " | " .. (feedbackText or "")))
+                    or (feedbackText or "")
+                refreshList()
+                return
+            end
+        end
+
+        seenWrong[key] = true
+        table.insert(wrongEntries, {
+            key = key,
+            letter = letter or "?",
+            word = word,
+            reasons = { [reason] = true },
+            reasonList = reason,
+            feedbackList = feedbackText or "",
+            time = os.date("%H:%M:%S"),
+        })
+        refreshList()
+    end
+
+    -- ===== Запись слова противника (если найдётся в UI) =====
+    local function recordOpponent(name, word, source)
+        if not word or word == "" then return end
+        local clean = word:match("^%s*(.-)%s*$")
+        if clean == "" or #clean > 40 then return end
+        if clean:find("%s") then return end
+        if clean:match("^%d+$") then return end
+
+        local key = (name or "?") .. "|" .. clean
+        if seenOpponent[key] then return end
+        seenOpponent[key] = true
+
+        table.insert(opponentEntries, {
+            name = name or "?",
+            word = clean,
+            source = source or "",
+            time = os.date("%H:%M:%S"),
+        })
+        refreshList()
+    end
+
+    local function looksLikeOpponentWord(text)
+        if not text or text == "" then return false end
+        local t = text:match("^%s*(.-)%s*$")
+        if t == "" or #t > 40 then return false end
+        if t:find("%s") then return false end
+        if t:match("^%d+$") then return false end
+        if not t:find("%a") and not t:find("[а-яА-Я]") then return false end
+        return true
+    end
+
+    local function isOpponentElement(label)
+        local n = (label.Name or ""):lower()
+        local p = (label.Parent and label.Parent.Name or ""):lower()
+        if n == "glyph" then return false end
+        if p == "wordtiles" then return false end
+        if n:find("opponent") or n:find("enemy") or n:find("rival") then
+            return true
+        end
+        if n:find("history") or n:find("log") or n:find("feed") then
+            return true
+        end
+        if p:find("history") or p:find("log") or p:find("feed")
+            or p:find("opponent") or p:find("moves")
+        then
+            return true
+        end
+        return false
+    end
+
+    local function scanKnownContainers()
+        local match = getMatch()
+        if not match then return end
+
+        local names = {
+            "History", "Log", "Feed", "Moves",
+            "OpponentWord", "OpponentMoves", "EnemyWords",
+        }
+
+        local function scan(root, source)
+            for _, d in ipairs(root:GetDescendants()) do
+                if d:IsA("TextLabel") or d:IsA("TextButton") then
+                    if looksLikeOpponentWord(d.Text) then
+                        local name = d.Parent and d.Parent.Name or d.Name
+                        recordOpponent(name, d.Text, source)
+                    end
+                end
+            end
+        end
+
+        for _, cn in ipairs(names) do
+            local c = match:FindFirstChild(cn)
+            if c then scan(c, "container:" .. cn) end
+        end
+    end
+
+    local function bindOpponentWatcher()
+        local match = getMatch()
+        if not match then return end
+        for _, d in ipairs(match:GetDescendants()) do
+            if (d:IsA("TextLabel") or d:IsA("TextButton"))
+                and isOpponentElement(d)
+                and not d:GetAttribute("__wb_bound")
+            then
+                d:SetAttribute("__wb_bound", true)
+                d:GetPropertyChangedSignal("Text"):Connect(function()
+                    if looksLikeOpponentWord(d.Text) then
+                        local name = d.Parent and d.Parent.Name or d.Name
+                        recordOpponent(name, d.Text, "watcher")
+                    end
+                end)
+                if looksLikeOpponentWord(d.Text) then
+                    local name = d.Parent and d.Parent.Name or d.Name
+                    recordOpponent(name, d.Text, "watcher-initial")
+                end
+            end
+        end
+    end
+
+    -- ===== Feedback: слушаем и Visible, и Text =====
+    local feedbackConns = {}
+    local boundFeedback
+
+    local function checkFeedback(feedback)
+        if not feedback or not feedback:IsA("TextLabel") then return end
+
+        local txt = feedback.Text or ""
+        if txt == "" then return end
+
+        local lowerTxt = txt:lower()
+
+        -- «Проверяем…» — не ошибка
+        if lowerTxt:find("проверяем", 1, true) then return end
+
+        -- «Уже использовано» — игнорируем
+        if isIgnoredReason(txt) then
+            -- если бот только что отправил слово — зафиксируем пропуск
+            if lastSent then
+                skippedUsed += 1
+                lastSent = nil
+                updateCounts()
+            end
+            return
+        end
+
+        local isError =
+            lowerTxt:find("не подходит", 1, true)
+            or lowerTxt:find("неверн", 1, true)
+            or lowerTxt:find("ошибк", 1, true)
+            or lowerTxt:find("нельзя", 1, true)
+            or lowerTxt:find("не найдено", 1, true)
+            or lowerTxt:find("нет слова", 1, true)
+            or lowerTxt:find("коротк", 1, true)
+            or lowerTxt:find("длинн", 1, true)
+            or lowerTxt:find("время", 1, true)
+            or lowerTxt:find("вышло", 1, true)
+
+        if not isError then return end
+
+        if lastSent then
+            recordWrong(lastSent.letter, lastSent.word, txt)
+            lastSent = nil
+        else
+            local letter, word = currentLetterAndWord()
+            recordWrong(letter, word, txt)
+        end
+    end
+
+    local function bindFeedbackWatcher()
+        local match = getMatch()
+        local feedback = match and match:FindFirstChild("Feedback")
+
+        if feedback ~= boundFeedback then
+            for _, c in ipairs(feedbackConns) do
+                pcall(function() c:Disconnect() end)
+            end
+            feedbackConns = {}
+            boundFeedback = feedback
+
+            if feedback and feedback:IsA("TextLabel") then
+                local c1 = feedback:GetPropertyChangedSignal("Visible"):Connect(function()
+                    checkFeedback(feedback)
+                end)
+                local c2 = feedback:GetPropertyChangedSignal("Text"):Connect(function()
+                    checkFeedback(feedback)
+                end)
+                table.insert(feedbackConns, c1)
+                table.insert(feedbackConns, c2)
+            end
+        end
+    end
+
+    -- ===== GUI лога =====
+    local logGui = Instance.new("ScreenGui")
+    logGui.Name = "P_WordBot_ErrorLog"
+    logGui.ResetOnSpawn = false
+    logGui.Parent = playerGui
+
+    local logFrame = Instance.new("Frame")
+    logFrame.Position = UDim2.fromOffset(330, 75)
+    logFrame.Size = UDim2.fromOffset(340, 380)
+    logFrame.BackgroundColor3 = Color3.fromRGB(18, 18, 18)
+    logFrame.BorderSizePixel = 0
+    logFrame.Visible = false
+    logFrame.Parent = logGui
+
+    local logHeader = Instance.new("TextLabel")
+    logHeader.Size = UDim2.new(1, -42, 0, 34)
+    logHeader.BackgroundColor3 = Color3.fromRGB(28, 28, 28)
+    logHeader.BorderSizePixel = 0
+    logHeader.Text = "  ЛОГ БОТА"
+    logHeader.TextColor3 = Color3.fromRGB(235, 235, 235)
+    logHeader.Font = Enum.Font.GothamBold
+    logHeader.TextSize = 13
+    logHeader.TextXAlignment = Enum.TextXAlignment.Left
+    logHeader.Parent = logFrame
+
+    local logClose = Instance.new("TextButton")
+    logClose.Size = UDim2.fromOffset(42, 34)
+    logClose.Position = UDim2.new(1, -42, 0, 0)
+    logClose.BackgroundColor3 = Color3.fromRGB(38, 38, 38)
+    logClose.BorderSizePixel = 0
+    logClose.Text = "X"
+    logClose.TextColor3 = Color3.fromRGB(235, 235, 235)
+    logClose.Font = Enum.Font.Gotham
+    logClose.TextSize = 14
+    logClose.Parent = logFrame
+
+    local tabWrong = Instance.new("TextButton")
+    tabWrong.Size = UDim2.fromOffset(150, 30)
+    tabWrong.Position = UDim2.fromOffset(12, 42)
+    tabWrong.BackgroundColor3 = Color3.fromRGB(65, 65, 65)
+    tabWrong.BorderSizePixel = 0
+    tabWrong.Text = "МОИ ОШИБКИ"
+    tabWrong.TextColor3 = Color3.fromRGB(235, 235, 235)
+    tabWrong.Font = Enum.Font.GothamBold
+    tabWrong.TextSize = 12
+    tabWrong.Parent = logFrame
+
+    local tabOpp = Instance.new("TextButton")
+    tabOpp.Size = UDim2.fromOffset(150, 30)
+    tabOpp.Position = UDim2.fromOffset(170, 42)
+    tabOpp.BackgroundColor3 = Color3.fromRGB(38, 38, 38)
+    tabOpp.BorderSizePixel = 0
+    tabOpp.Text = "СЛОВА ПРОТИВНИКОВ"
+    tabOpp.TextColor3 = Color3.fromRGB(235, 235, 235)
+    tabOpp.Font = Enum.Font.Gotham
+    tabOpp.TextSize = 12
+    tabOpp.Parent = logFrame
+
+    local copyBtn = Instance.new("TextButton")
+    copyBtn.Size = UDim2.fromOffset(150, 28)
+    copyBtn.Position = UDim2.fromOffset(12, 78)
+    copyBtn.BackgroundColor3 = Color3.fromRGB(38, 38, 38)
+    copyBtn.BorderSizePixel = 0
+    copyBtn.Text = "Копировать"
+    copyBtn.TextColor3 = Color3.fromRGB(235, 235, 235)
+    copyBtn.Font = Enum.Font.Gotham
+    copyBtn.TextSize = 12
+    copyBtn.Parent = logFrame
+
+    local clearBtn = Instance.new("TextButton")
+    clearBtn.Size = UDim2.fromOffset(150, 28)
+    clearBtn.Position = UDim2.fromOffset(170, 78)
+    clearBtn.BackgroundColor3 = Color3.fromRGB(38, 38, 38)
+    clearBtn.BorderSizePixel = 0
+    clearBtn.Text = "Очистить вкладку"
+    clearBtn.TextColor3 = Color3.fromRGB(235, 235, 235)
+    clearBtn.Font = Enum.Font.Gotham
+    clearBtn.TextSize = 12
+    clearBtn.Parent = logFrame
+
+    local scroll = Instance.new("ScrollingFrame")
+    scroll.Position = UDim2.fromOffset(12, 114)
+    scroll.Size = UDim2.new(1, -24, 1, -140)
+    scroll.BackgroundColor3 = Color3.fromRGB(24, 24, 24)
+    scroll.BorderSizePixel = 0
+    scroll.ScrollBarThickness = 6
+    scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+    scroll.Parent = logFrame
+
+    local listLayout = Instance.new("UIListLayout")
+    listLayout.Padding = UDim.new(0, 3)
+    listLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    listLayout.Parent = scroll
+
+    local countLabel = Instance.new("TextLabel")
+    countLabel.Position = UDim2.new(0, 12, 1, -22)
+    countLabel.Size = UDim2.new(1, -24, 0, 18)
+    countLabel.BackgroundTransparency = 1
+    countLabel.Text = "Ошибок: 0 | Пропущено «уже было»: 0"
+    countLabel.TextColor3 = Color3.fromRGB(175, 175, 175)
+    countLabel.Font = Enum.Font.Gotham
+    countLabel.TextSize = 12
+    countLabel.TextXAlignment = Enum.TextXAlignment.Left
+    countLabel.Parent = logFrame
+
+    local activeTab = "wrong"
+
+    local function updateCounts()
+        if activeTab == "wrong" then
+            countLabel.Text = string.format(
+                "Ошибок: %d | Пропущено «уже было»: %d",
+                #wrongEntries, skippedUsed
+            )
+        else
+            countLabel.Text = string.format(
+                "Слов противников: %d", #opponentEntries
+            )
+        end
+    end
+
+    function refreshList()
+        for _, child in ipairs(scroll:GetChildren()) do
+            if child:IsA("TextLabel") then child:Destroy() end
+        end
+
+        local y = 0
+
+        if activeTab == "wrong" then
+            for i, e in ipairs(wrongEntries) do
+                local row = Instance.new("TextLabel")
+                row.Size = UDim2.new(1, -8, 0, 40)
+                row.Position = UDim2.fromOffset(4, y)
+                row.BackgroundTransparency = 1
+                row.Text = string.format(
+                    "%d) [%s] «%s»\n   причина: %s\n   %s",
+                    i, e.letter, e.word, e.reasonList, e.time
+                )
+                row.TextColor3 = Color3.fromRGB(255, 180, 180)
+                row.Font = Enum.Font.Gotham
+                row.TextSize = 11
+                row.TextXAlignment = Enum.TextXAlignment.Left
+                row.TextYAlignment = Enum.TextYAlignment.Top
+                row.TextWrapped = true
+                row.LayoutOrder = i
+                row.Parent = scroll
+                y += 44
+            end
+        else
+            for i, e in ipairs(opponentEntries) do
+                local row = Instance.new("TextLabel")
+                row.Size = UDim2.new(1, -8, 0, 36)
+                row.Position = UDim2.fromOffset(4, y)
+                row.BackgroundTransparency = 1
+                row.Text = string.format(
+                    "%d) %s: «%s»\n   источник: %s | %s",
+                    i, e.name, e.word, e.source, e.time
+                )
+                row.TextColor3 = Color3.fromRGB(180, 220, 255)
+                row.Font = Enum.Font.Gotham
+                row.TextSize = 11
+                row.TextXAlignment = Enum.TextXAlignment.Left
+                row.TextYAlignment = Enum.TextYAlignment.Top
+                row.TextWrapped = true
+                row.LayoutOrder = i
+                row.Parent = scroll
+                y += 40
+            end
+        end
+
+        scroll.CanvasSize = UDim2.new(0, 0, 0, y)
+        updateCounts()
+    end
+
+    local function setTab(tab)
+        activeTab = tab
+        if tab == "wrong" then
+            tabWrong.BackgroundColor3 = Color3.fromRGB(65, 65, 65)
+            tabWrong.Font = Enum.Font.GothamBold
+            tabOpp.BackgroundColor3 = Color3.fromRGB(38, 38, 38)
+            tabOpp.Font = Enum.Font.Gotham
+        else
+            tabOpp.BackgroundColor3 = Color3.fromRGB(65, 65, 65)
+            tabOpp.Font = Enum.Font.GothamBold
+            tabWrong.BackgroundColor3 = Color3.fromRGB(38, 38, 38)
+            tabWrong.Font = Enum.Font.Gotham
+        end
+        refreshList()
+    end
+
+    tabWrong.Activated:Connect(function() setTab("wrong") end)
+    tabOpp.Activated:Connect(function() setTab("opponent") end)
+
+    logClose.Activated:Connect(function()
+        logFrame.Visible = false
+    end)
+
+    copyBtn.Activated:Connect(function()
+        local lines = {}
+        if activeTab == "wrong" then
+            for i, e in ipairs(wrongEntries) do
+                table.insert(lines, string.format(
+                    "%d) [%s] %s — причина: %s",
+                    i, e.letter, e.word, e.reasonList
+                ))
+                if e.feedbackList ~= "" then
+                    table.insert(lines, "   feedback: " .. e.feedbackList)
+                end
+            end
+        else
+            for i, e in ipairs(opponentEntries) do
+                table.insert(lines, string.format(
+                    "%d) %s: %s (источник: %s)",
+                    i, e.name, e.word, e.source
+                ))
+            end
+        end
+
+        local text = table.concat(lines, "\n")
+        local copied = false
+        if type(setclipboard) == "function" then
+            copied = pcall(setclipboard, text)
+        end
+        if not copied and type(toclipboard) == "function" then
+            copied = pcall(toclipboard, text)
+        end
+
+        copyBtn.Text = copied and "Скопировано!" or "Нет доступа"
+        task.delay(1.5, function() copyBtn.Text = "Копировать" end)
+    end)
+
+    clearBtn.Activated:Connect(function()
+        if activeTab == "wrong" then
+            table.clear(wrongEntries)
+            table.clear(seenWrong)
+            lastSent = nil
+            skippedUsed = 0
+        else
+            table.clear(opponentEntries)
+            table.clear(seenOpponent)
+        end
+        refreshList()
+        clearBtn.Text = "Очищено"
+        task.delay(1.0, function() clearBtn.Text = "Очистить вкладку" end)
+    end)
+
+    -- Перетаскивание
+    local dragInput, dragStart, startPos
+    logHeader.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then
+            dragInput = input
+            dragStart = input.Position
+            startPos = logFrame.Position
+        end
+    end)
+    UIS.InputChanged:Connect(function(input)
+        if not dragInput then return end
+        local mouseDrag =
+            dragInput.UserInputType == Enum.UserInputType.MouseButton1
+            and input.UserInputType == Enum.UserInputType.MouseMovement
+        if mouseDrag or input == dragInput then
+            local delta = input.Position - dragStart
+            logFrame.Position = UDim2.new(
+                startPos.X.Scale,
+                startPos.X.Offset + delta.X,
+                startPos.Y.Scale,
+                startPos.Y.Offset + delta.Y
+            )
+        end
+    end)
+    UIS.InputEnded:Connect(function(input)
+        if input == dragInput then dragInput = nil end
+    end)
+
+    -- Кнопка «ЛОГ» в главном окне
+    local mainFrame = nil
+    for _, d in ipairs(botGui:GetDescendants()) do
+        if d:IsA("Frame") and d ~= logFrame then
+            mainFrame = d
+            break
+        end
+    end
+
+    if mainFrame and not mainFrame:FindFirstChild("OpenLogButton") then
+        local logBtn = Instance.new("TextButton")
+        logBtn.Name = "OpenLogButton"
+        logBtn.Size = UDim2.new(1, -24, 0, 28)
+        logBtn.Position = UDim2.new(0, 12, 1, -34)
+        logBtn.BackgroundColor3 = Color3.fromRGB(38, 38, 38)
+        logBtn.BorderSizePixel = 0
+        logBtn.Text = "ЛОГ (F8)"
+        logBtn.TextColor3 = Color3.fromRGB(235, 235, 235)
+        logBtn.Font = Enum.Font.Gotham
+        logBtn.TextSize = 12
+        logBtn.Parent = mainFrame
+        logBtn.Activated:Connect(function()
+            logFrame.Visible = not logFrame.Visible
+        end)
+    end
+
+    UIS.InputBegan:Connect(function(input)
+        if input.KeyCode == Enum.KeyCode.F8 then
+            logFrame.Visible = not logFrame.Visible
+        end
+    end)
+
+    -- Фоновые наблюдатели
+    task.spawn(function()
+        while logGui.Parent do
+            bindFeedbackWatcher()
+            bindOpponentWatcher()
+            scanKnownContainers()
+            task.wait(0.3)
+        end
+    end)
+
+    _G.__P_WordBot_ErrorLog = logGui
+    refreshList()
+end
+end
