@@ -1,0 +1,1163 @@
+--=====================================================================
+--  RIVAL VISUALS v1.3
+--  - Freecam (Scriptable + RenderStepped + IsKeyDown + GetMouseDelta)
+--  - Aimbot только по зажатой кнопке (ПКМ / бинд)
+--  - Предикт по AssemblyLinearVelocity + ping
+--  - AutoShoot с aimbotLocked + cooldown
+--  - Безопасный serialize/deserialize биндов
+--=====================================================================
+if _G.RV_LOADED and _G.RV_UNLOAD then pcall(_G.RV_UNLOAD) end
+_G.RV_LOADED = true
+
+local Players    = game:GetService("Players")
+local Workspace  = game:GetService("Workspace")
+local RS         = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local UIS        = game:GetService("UserInputService")
+local TweenSvc   = game:GetService("TweenService")
+local HttpSvc    = game:GetService("HttpService")
+local VIM        = game:GetService("VirtualInputManager")
+local Stats      = game:GetService("Stats")
+
+local LP     = Players.LocalPlayer
+local Camera = Workspace.CurrentCamera
+
+local function safeCall(fn, ...)
+    if type(fn) ~= "function" then return nil end
+    local ok, res = pcall(fn, ...)
+    if not ok then return nil end
+    return res
+end
+
+local Drawing_ok     = (type(Drawing) == "table")
+local Drawing_new_ok = Drawing_ok and type(Drawing.new) == "function"
+local hasFS          = (type(writefile) == "function" and type(readfile) == "function"
+                        and type(isfile) == "function")
+
+local function D_new(cls) if not Drawing_new_ok then return nil end return safeCall(Drawing.new, cls) end
+local function D_remove(o) if o and type(o.Remove) == "function" then safeCall(o.Remove, o) end end
+
+--=====================================================================
+--  КОНФИГ
+--=====================================================================
+local DEFAULT = {
+    -- AimBot
+    AimEnabled=false, AimBind=Enum.KeyCode.E,
+    AimMouseOnly=true,             -- ★ ФИКС АИМБОТ-КНОПКА: только при ПКМ
+    AimSmooth=0, AimFOV=150, AimDist=500,
+    AimVisibleOnly=true, AimTeamCheck=true,
+    AimPrediction=0.15,            -- ★ ПРЕДИКТ: слайдер 0..0.5
+    AimPingComp=0.05,              -- ★ ПРЕДИКТ: слайдер 0..0.2
+    AimLockAngle=2,                -- ★ АВТОШОТ: порог угла для lock (град)
+
+    -- TriggerBot
+    TriggerEnabled=false, TriggerBind=Enum.KeyCode.Q,
+    TriggerDelay=0.03, TriggerDist=300,
+
+    -- AutoShoot ★
+    AutoShootEnabled=false,
+    AutoShootDelay=0.10,           -- сек, минимум между выстрелами
+
+    -- ESP
+    EspEnabled=true, EspBind=Enum.KeyCode.F1,
+    EspPlayers=true, EspBots=true, EspBox=true, EspSkeleton=true,
+    EspName=true, EspHP=true, EspDistance=true,
+    EspPlayersDist=500, EspObjectsDist=500,
+    EspVisibleOnly=false, EspFOV=0,
+    ObjEnabled=true, ObjLoot=true, ObjFurnace=true, ObjBench=true,
+    ObjDoor=true, ObjTurret=true, ObjSpawn=true, ObjDrone=true,
+
+    -- XRay / Freecam / Noclip / Inv
+    XRayEnabled=false, XRayBind=Enum.KeyCode.F3,
+    FreecamEnabled=false, FreecamBind=Enum.KeyCode.F4, FreecamSpeed=3,
+    NoclipEnabled=false, NoclipBind=Enum.KeyCode.N,
+    InventoryEnabled=true, InventoryBind=Enum.KeyCode.F5,
+
+    ColVisible=Color3.fromRGB(0,255,80),
+    ColHidden=Color3.fromRGB(255,40,40),
+    ColBot=Color3.fromRGB(255,180,0),
+    MenuBind=Enum.KeyCode.RightShift,
+}
+local CFG = {}
+for k, v in pairs(DEFAULT) do CFG[k] = v end
+
+local CONFIG_PATH = "rivalvisuals_config.json"
+
+--=====================================================================
+--  Безопасная сериализация (ФИКС БАГА #1)
+--=====================================================================
+local function serializeValue(v)
+    if typeof(v) == "EnumItem" then
+        if v.EnumType == Enum.KeyCode then return {__kc = v.Name} end
+        return {__enum = v.EnumType.Name, name = v.Name}
+    elseif typeof(v) == "Color3" then
+        return {__color = true, r = v.R, g = v.G, b = v.B}
+    elseif type(v) == "string" or type(v) == "number" or type(v) == "boolean" then
+        return v
+    elseif type(v) == "table" then
+        local out = {}
+        for kk, vv in pairs(v) do
+            if kk ~= "Name" and kk ~= "Value" and kk ~= "EnumType" then
+                out[kk] = serializeValue(vv)
+            end
+        end
+        return out
+    end
+    return nil
+end
+local function deserializeValue(v)
+    if type(v) == "table" then
+        if v.__kc then
+            local ok, kc = pcall(function() return Enum.KeyCode[v.__kc] end)
+            if ok and kc then return kc end
+            return nil
+        elseif v.__enum then
+            local ok, e = pcall(function() return Enum[v.__enum][v.name] end)
+            return ok and e or nil
+        elseif v.__color then
+            return Color3.new(v.r, v.g, v.b)
+        else
+            local out = {}
+            for kk, vv in pairs(v) do out[kk] = deserializeValue(vv) end
+            return out
+        end
+    end
+    return v
+end
+
+local saveQueued, saveErrorLogged = false, false
+local function saveConfig()
+    local ok, err = pcall(function()
+        local copy = {}
+        for k, v in pairs(CFG) do copy[k] = serializeValue(v) end
+        local data = HttpSvc:JSONEncode(copy)
+        if hasFS then pcall(writefile, CONFIG_PATH, data) end
+        _G.RV_CFG = data
+    end)
+    if not ok and not saveErrorLogged then
+        saveErrorLogged = true
+        warn("[RivalVisuals] saveConfig error:", err)
+    end
+end
+local function queueSave()
+    if saveQueued then return end
+    saveQueued = true
+    task.delay(0.6, function() saveQueued = false; saveConfig() end)
+end
+local function loadConfig()
+    local raw
+    if hasFS and isfile(CONFIG_PATH) then
+        local ok, d = pcall(readfile, CONFIG_PATH); if ok then raw = d end
+    end
+    if not raw then raw = _G.RV_CFG end
+    if not raw then return end
+    local ok, t = pcall(HttpSvc.JSONDecode, HttpSvc, raw)
+    if not ok or type(t) ~= "table" then return end
+    for k, v in pairs(t) do
+        if DEFAULT[k] ~= nil then
+            local d = deserializeValue(v)
+            if d ~= nil then CFG[k] = d end
+        end
+    end
+end
+loadConfig()
+
+--=====================================================================
+--  Хелперы
+--=====================================================================
+local H = {}
+H.isBot = function(rig)
+    if not rig or not rig:IsA("Model") then return false end
+    if not rig:FindFirstChildOfClass("Humanoid") then return false end
+    return Players:GetPlayerFromCharacter(rig) == nil
+end
+H.isAlive = function(rig)
+    local hum = rig and rig:FindFirstChildOfClass("Humanoid")
+    return hum and hum.Health > 0
+end
+H.rigName = function(rig)
+    local p = Players:GetPlayerFromCharacter(rig)
+    if p then return p.DisplayName or p.Name end
+    if H.isBot(rig) then return "BOT" end
+    return rig.Name
+end
+H.isEnemy = function(rig)
+    if rig == LP.Character then return false end
+    if not CFG.AimTeamCheck then return true end
+    local p = Players:GetPlayerFromCharacter(rig)
+    if p and LP.Team and p.Team == LP.Team then return false end
+    return true
+end
+H.visible = function(rig, part)
+    if not part then return false end
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    params.FilterDescendantsInstances = { LP.Character, rig }
+    local res = Workspace:Raycast(Camera.CFrame.Position, part.Position - Camera.CFrame.Position, params)
+    return res == nil
+end
+H.getTargets = function()
+    local list = {}
+    if CFG.EspPlayers then
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= LP and p.Character and H.isAlive(p.Character) and H.isEnemy(p.Character) then
+                table.insert(list, p.Character)
+            end
+        end
+    end
+    if CFG.EspBots then
+        for _, o in ipairs(Workspace:GetChildren()) do
+            if o:IsA("Model") and H.isAlive(o) and H.isBot(o) and H.isEnemy(o) then
+                table.insert(list, o)
+            end
+        end
+    end
+    return list
+end
+
+local function getAimPointPart(rig)
+    local tool = rig:FindFirstChildOfClass("Tool")
+    if tool then
+        for _, d in ipairs(tool:GetDescendants()) do
+            if (d:IsA("Attachment") or d:IsA("BasePart")) and d.Name == "AimPoint" then
+                return d
+            end
+        end
+    end
+    return rig:FindFirstChild("Head")
+end
+local function getAimPointPos(rig)
+    local part = getAimPointPart(rig)
+    if not part then return nil end
+    if part:IsA("Attachment") then return part.WorldPosition else return part.Position end
+end
+
+--=====================================================================
+--  Уведомления
+--=====================================================================
+local notifGui = Instance.new("ScreenGui")
+notifGui.Name="RV_Notifs"; notifGui.ResetOnSpawn=false; notifGui.IgnoreGuiInset=true
+notifGui.DisplayOrder=99999
+pcall(function() notifGui.Parent = game:GetService("CoreGui") end)
+if not notifGui.Parent then notifGui.Parent = LP:WaitForChild("PlayerGui") end
+
+local notifHolder = Instance.new("Frame", notifGui)
+notifHolder.AnchorPoint=Vector2.new(1,0)
+notifHolder.Position=UDim2.new(1,-16,0,16)
+notifHolder.Size=UDim2.new(0,320,0,400)
+notifHolder.BackgroundTransparency=1
+local notifLay = Instance.new("UIListLayout", notifHolder)
+notifLay.Padding=UDim.new(0,8)
+notifLay.HorizontalAlignment=Enum.HorizontalAlignment.Right
+notifLay.SortOrder=Enum.SortOrder.LayoutOrder
+local notifOrder = 0
+
+local function Notify(title, text, isEnabled)
+    notifOrder = notifOrder + 1
+    local card = Instance.new("Frame", notifHolder)
+    card.LayoutOrder = notifOrder
+    card.Size = UDim2.new(0,0,0,60)
+    card.BackgroundColor3 = Color3.fromRGB(20,20,26)
+    card.BackgroundTransparency = 1; card.BorderSizePixel = 0; card.ClipsDescendants = true
+    Instance.new("UICorner", card).CornerRadius = UDim.new(0,10)
+    Instance.new("UIStroke", card).Thickness = 1.5
+    local grad = Instance.new("UIGradient", card)
+    local accent = isEnabled and Color3.fromRGB(0,255,120) or Color3.fromRGB(255,60,60)
+    grad.Color = ColorSequence.new(Color3.fromRGB(139,90,43), accent); grad.Rotation = 30
+    local titleLbl = Instance.new("TextLabel", card)
+    titleLbl.BackgroundTransparency=1; titleLbl.Position=UDim2.new(0,12,0,6)
+    titleLbl.Size=UDim2.new(1,-24,0,22)
+    titleLbl.Font=Enum.Font.GothamBold; titleLbl.TextSize=14
+    titleLbl.TextXAlignment=Enum.TextXAlignment.Left
+    titleLbl.TextColor3=Color3.new(1,1,1); titleLbl.Text=title
+    local statusLbl = Instance.new("TextLabel", card)
+    statusLbl.BackgroundTransparency=1; statusLbl.Position=UDim2.new(0,12,0,30)
+    statusLbl.Size=UDim2.new(1,-24,0,22)
+    statusLbl.Font=Enum.Font.Gotham; statusLbl.TextSize=12
+    statusLbl.TextXAlignment=Enum.TextXAlignment.Left
+    statusLbl.TextColor3=accent
+    statusLbl.Text = (text or "") .. (isEnabled and " ON" or " OFF")
+    TweenSvc:Create(card, TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+        Size = UDim2.new(0,300,0,60), BackgroundTransparency = 0.3,
+    }):Play()
+    task.delay(2.5, function()
+        local t = TweenSvc:Create(card, TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+            Size = UDim2.new(0,0,0,60), BackgroundTransparency = 1,
+        })
+        t:Play(); t.Completed:Connect(function() card:Destroy() end)
+    end)
+end
+
+--=====================================================================
+--  ESP (без изменений, кратко, как в v1.2)
+--=====================================================================
+local ESP = { boxes={}, skel={}, texts={}, hl={}, objHL={}, objTxt={}, cache={} }
+local BONES = {
+    {"Head","Torso"},{"Torso","HumanoidRootPart"},
+    {"Torso","Left Arm"},{"Torso","Right Arm"},
+    {"Torso","Left Leg"},{"Torso","Right Leg"},
+}
+local function mkBox()
+    local b = {}
+    for _, k in ipairs({"top","bottom","left","right"}) do
+        local l = D_new("Line")
+        if l then l.Thickness=1; l.Transparency=1; l.Visible=false; b[k]=l end
+    end
+    return b
+end
+local function setBox(b, top, bot, col)
+    if not b.top then return end
+    b.top.From=Vector2.new(top.X,top.Y); b.top.To=Vector2.new(bot.X,top.Y)
+    b.bottom.From=Vector2.new(top.X,bot.Y); b.bottom.To=Vector2.new(bot.X,bot.Y)
+    b.left.From=Vector2.new(top.X,top.Y); b.left.To=Vector2.new(top.X,bot.Y)
+    b.right.From=Vector2.new(bot.X,top.Y); b.right.To=Vector2.new(bot.X,bot.Y)
+    for _,l in pairs(b) do l.Color=col; l.Visible=true end
+end
+local function hideBox(b) for _,l in pairs(b) do l.Visible=false end end
+local function mkSkel()
+    local s={}
+    for i=1,#BONES do local l=D_new("Line"); if l then l.Thickness=1; l.Transparency=1; l.Visible=false; s[i]=l end end
+    return s
+end
+local function setSkel(s, rig, col)
+    for i,p in ipairs(BONES) do
+        local a=rig:FindFirstChild(p[1]); local b=rig:FindFirstChild(p[2])
+        if a and b and s[i] then
+            local pa=Camera:WorldToViewportPoint(a.Position); local pb=Camera:WorldToViewportPoint(b.Position)
+            s[i].From=Vector2.new(pa.X,pa.Y); s[i].To=Vector2.new(pb.X,pb.Y)
+            s[i].Color=col; s[i].Visible=true
+        elseif s[i] then s[i].Visible=false end
+    end
+end
+local function hideSkel(s) for _,l in ipairs(s) do if l then l.Visible=false end end end
+local function mkText(sz)
+    local t=D_new("Text"); if not t then return nil end
+    t.Size=sz or 13; t.Center=true; t.Outline=true
+    t.OutlineColor=Color3.new(0,0,0); t.Font=2; t.Visible=false
+    return t
+end
+local function mkHL(obj,col)
+    local h=Instance.new("Highlight")
+    h.Name="RV_HL"; h.FillColor=col; h.FillTransparency=0.7
+    h.OutlineColor=col; h.OutlineTransparency=0
+    h.DepthMode=Enum.HighlightDepthMode.AlwaysOnTop
+    h.Adornee=obj; h.Parent=obj
+    return h
+end
+local OBJ_LISTS = {
+    loot={"DroppedContainer","Airdrop","LargeBox","SmallBox","GreenBox","EliteBox","ClosedBox"},
+    furnace={"LargeFurnace","SmallFurnace"},
+    bench={"WorkBench","ModBench","AdvancedModBench","GunBench"},
+    door={"WoodDoor","StoneDoor","IronDoor","AlloyDoor","WoodDoubleDoor","StoneDoubleDoor",
+          "IronDoubleDoor","AlloyDoubleDoor","BarrierGate","HighWallGate"},
+    turret={"Turret"}, spawn={"RespawnPad","AdvancedRespawnPad","RandomRespawn"},
+    drone={"SentinelTroop","LowTierSentinelTroop"},
+}
+local ALLOBJ = {}
+for cat,ns in pairs(OBJ_LISTS) do for _,n in ipairs(ns) do ALLOBJ[n]=cat end end
+local function scanObj(o) if o:IsA("Model") and ALLOBJ[o.Name] then ESP.cache[o]=ALLOBJ[o.Name] end end
+Workspace.DescendantAdded:Connect(scanObj)
+for _,o in ipairs(Workspace:GetDescendants()) do scanObj(o) end
+local function objOn(cat)
+    if not CFG.ObjEnabled then return false end
+    if cat=="loot" then return CFG.ObjLoot end
+    if cat=="furnace" then return CFG.ObjFurnace end
+    if cat=="bench" then return CFG.ObjBench end
+    if cat=="door" then return CFG.ObjDoor end
+    if cat=="turret" then return CFG.ObjTurret end
+    if cat=="spawn" then return CFG.ObjSpawn end
+    if cat=="drone" then return CFG.ObjDrone end
+    return false
+end
+local CATCOL = {
+    loot=Color3.fromRGB(255,215,0), furnace=Color3.fromRGB(255,120,0),
+    bench=Color3.fromRGB(180,180,180), door=Color3.fromRGB(0,200,255),
+    turret=Color3.fromRGB(255,0,0), spawn=Color3.fromRGB(0,255,255),
+    drone=Color3.fromRGB(255,80,200),
+}
+
+RunService.RenderStepped:Connect(function()
+    if not Drawing_new_ok then return end
+    if not CFG.EspEnabled then
+        for _,b in pairs(ESP.boxes) do hideBox(b) end
+        for _,s in pairs(ESP.skel) do hideSkel(s) end
+        for _,t in pairs(ESP.texts) do if t then t.Visible=false end end
+        for _,h in pairs(ESP.hl) do h.Enabled=false end
+        for _,t in pairs(ESP.objTxt) do if t then t.Visible=false end end
+        for _,h in pairs(ESP.objHL) do h.Enabled=false end
+        return
+    end
+    local targets = H.getTargets()
+    local alive = {}
+    for _,r in ipairs(targets) do alive[r]=true end
+    for r,b in pairs(ESP.boxes) do if not alive[r] then hideBox(b) end end
+    for r,s in pairs(ESP.skel) do if not alive[r] then hideSkel(s) end end
+    for r,t in pairs(ESP.texts) do if not alive[r] and t then t.Visible=false end end
+    for r,h in pairs(ESP.hl) do if not alive[r] then h.Enabled=false end end
+
+    for _,rig in ipairs(targets) do
+        local head=rig:FindFirstChild("Head"); local root=rig:FindFirstChild("HumanoidRootPart")
+        local hum=rig:FindFirstChildOfClass("Humanoid")
+        if head and root and hum then
+            local dist=(root.Position-Camera.CFrame.Position).Magnitude
+            local show = dist <= CFG.EspPlayersDist
+            local topP=head.Position+Vector3.new(0,0.6,0); local botP=root.Position-Vector3.new(0,2.8,0)
+            local top,onT=Camera:WorldToViewportPoint(topP); local bot,onB=Camera:WorldToViewportPoint(botP)
+            if not (onT and onB) then show=false end
+            if show and CFG.EspFOV>0 then
+                local sc=Vector2.new(top.X,top.Y)
+                if (sc-UIS:GetMouseLocation()).Magnitude > CFG.EspFOV then show=false end
+            end
+            local vis = show and H.visible(rig, head) or false
+            if CFG.EspVisibleOnly and not vis then show=false end
+            if show then
+                local isBotRig=H.isBot(rig)
+                local col = isBotRig and CFG.ColBot or (vis and CFG.ColVisible or CFG.ColHidden)
+                if CFG.EspBox then ESP.boxes[rig]=ESP.boxes[rig] or mkBox(); setBox(ESP.boxes[rig], top, bot, col) end
+                if CFG.EspSkeleton then ESP.skel[rig]=ESP.skel[rig] or mkSkel(); setSkel(ESP.skel[rig], rig, col) end
+                if CFG.EspName or CFG.EspHP or CFG.EspDistance then
+                    local t=ESP.texts[rig] or mkText(13); ESP.texts[rig]=t
+                    if t then
+                        local parts={}
+                        if CFG.EspName then table.insert(parts,(isBotRig and "[BOT] " or "")..H.rigName(rig)) end
+                        if CFG.EspHP then table.insert(parts, string.format("HP %d", math.floor(hum.Health))) end
+                        if CFG.EspDistance then table.insert(parts, math.floor(dist).."m") end
+                        t.Text=table.concat(parts," | "); t.Position=Vector2.new(top.X, top.Y-18)
+                        t.Color=col; t.Visible=true
+                    end
+                end
+                local h=ESP.hl[rig] or mkHL(rig, col); ESP.hl[rig]=h
+                h.FillColor=col; h.OutlineColor=col; h.Enabled=true
+            else
+                if ESP.boxes[rig] then hideBox(ESP.boxes[rig]) end
+                if ESP.skel[rig] then hideSkel(ESP.skel[rig]) end
+                if ESP.texts[rig] then ESP.texts[rig].Visible=false end
+                if ESP.hl[rig] then ESP.hl[rig].Enabled=false end
+            end
+        end
+    end
+
+    for obj,cat in pairs(ESP.cache) do
+        if not obj.Parent or not objOn(cat) then
+            if ESP.objTxt[obj] then ESP.objTxt[obj].Visible=false end
+            if ESP.objHL[obj] then ESP.objHL[obj].Enabled=false end
+            continue
+        end
+        local part=obj:FindFirstChild("HitBox") or obj:FindFirstChild("Hitbox") or obj.PrimaryPart
+        if not part then
+            for _,c in ipairs(obj:GetChildren()) do if c:IsA("BasePart") then part=c; break end end
+        end
+        if part then
+            local dist=(part.Position-Camera.CFrame.Position).Magnitude
+            if dist <= CFG.EspObjectsDist then
+                local sp,on=Camera:WorldToViewportPoint(part.Position)
+                if on then
+                    local t=ESP.objTxt[obj] or mkText(12); ESP.objTxt[obj]=t
+                    if t then
+                        t.Text=obj.Name.." ["..math.floor(dist).."m]"
+                        t.Position=Vector2.new(sp.X,sp.Y); t.Color=CATCOL[cat] or Color3.new(1,1,1); t.Visible=true
+                    end
+                    local h=ESP.objHL[obj] or mkHL(obj, CATCOL[cat] or Color3.new(1,1,1)); ESP.objHL[obj]=h
+                    h.FillColor=CATCOL[cat] or Color3.new(1,1,1)
+                    h.OutlineColor=CATCOL[cat] or Color3.new(1,1,1); h.Enabled=true
+                else
+                    if ESP.objTxt[obj] then ESP.objTxt[obj].Visible=false end
+                    if ESP.objHL[obj] then ESP.objHL[obj].Enabled=false end
+                end
+            else
+                if ESP.objTxt[obj] then ESP.objTxt[obj].Visible=false end
+                if ESP.objHL[obj] then ESP.objHL[obj].Enabled=false end
+            end
+        end
+    end
+end)
+
+--=====================================================================
+--  XRAY
+--=====================================================================
+local xrayHLs = {}
+local function updateXray()
+    for _,h in pairs(xrayHLs) do pcall(function() h:Destroy() end) end
+    xrayHLs = {}
+    if not CFG.XRayEnabled then return end
+    local names={"Wall","HalfWall","Window","Floor","TriangleFloor","Foundation","TriangleFoundation","HighWall"}
+    for _,o in ipairs(Workspace:GetDescendants()) do
+        if o:IsA("Model") and table.find(names, o.Name) then
+            local h=Instance.new("Highlight")
+            h.Name="RV_XRay"; h.FillColor=Color3.fromRGB(0,150,255); h.FillTransparency=0.85
+            h.OutlineColor=Color3.fromRGB(0,200,255); h.OutlineTransparency=0.3
+            h.DepthMode=Enum.HighlightDepthMode.AlwaysOnTop
+            h.Adornee=o; h.Parent=o
+            table.insert(xrayHLs,h)
+        end
+    end
+end
+
+--=====================================================================
+--  ★ ФИКС FREECAM (Часть A)
+--=====================================================================
+local freecam = {
+    active   = false,
+    savedCF  = nil,
+    savedType= nil,
+    savedSub = nil,
+    cf       = CFrame.new(),
+    yaw      = 0,
+    pitch    = 0,
+}
+
+local function startFreecam()
+    local cam = Workspace.CurrentCamera
+    if not cam or not cam.Parent then return end
+    -- ФИКС FREECAM: сохраняем состояние
+    freecam.savedCF   = cam.CFrame
+    freecam.savedType = cam.CameraType
+    freecam.savedSub  = cam.CameraSubject
+    freecam.cf        = cam.CFrame
+    -- yaw/pitch из текущего CFrame
+    local look = cam.CFrame.LookVector
+    freecam.yaw   = math.atan2(-look.X, -look.Z)
+    freecam.pitch = math.asin(math.clamp(look.Y, -1, 1))
+    -- ФИКС FREECAM: делаем Scriptable в pcall (некоторые игры блокируют)
+    local ok = pcall(function() cam.CameraType = Enum.CameraType.Scriptable end)
+    if not ok then
+        warn("[Freecam] не удалось установить CameraType.Scriptable")
+        return
+    end
+    freecam.active = true
+    Notify("Freecam", "", true)
+end
+
+local function stopFreecam()
+    local cam = Workspace.CurrentCamera
+    freecam.active = false
+    if not cam then return end
+    pcall(function()
+        if freecam.savedType   then cam.CameraType    = freecam.savedType   end
+        if freecam.savedSub    then cam.CameraSubject = freecam.savedSub    end
+        if freecam.savedCF     then cam.CFrame        = freecam.savedCF     end
+    end)
+    Notify("Freecam", "", false)
+end
+
+-- ФИКС FREECAM: BindToRenderStep с приоритетом Camera+1
+local function freecamStep(dt)
+    if not freecam.active then return end
+    local cam = Workspace.CurrentCamera
+    if not cam or not cam.Parent then return end
+    -- скорость + Shift
+    local sp = CFG.FreecamSpeed * dt * 50
+    if UIS:IsKeyDown(Enum.KeyCode.LeftShift) then sp = sp * 3 end
+    local mv = Vector3.zero
+    if UIS:IsKeyDown(Enum.KeyCode.W) then mv += Vector3.new(0,0,-1) end
+    if UIS:IsKeyDown(Enum.KeyCode.S) then mv += Vector3.new(0,0,1) end
+    if UIS:IsKeyDown(Enum.KeyCode.A) then mv += Vector3.new(-1,0,0) end
+    if UIS:IsKeyDown(Enum.KeyCode.D) then mv += Vector3.new(1,0,0) end
+    if UIS:IsKeyDown(Enum.KeyCode.Space) then mv += Vector3.new(0,1,0) end
+    if UIS:IsKeyDown(Enum.KeyCode.LeftControl) then mv -= Vector3.new(0,1,0) end
+    -- ФИКС FREECAM: движение через LookVector/RightVector (не залипает)
+    local look  = CFrame.fromEulerAnglesYXZ(freecam.pitch, freecam.yaw, 0)
+    local right = look.RightVector
+    local fwd   = look.LookVector
+    local moveWorld = (fwd * -mv.Z) + (right * mv.X) + Vector3.new(0, mv.Y, 0)
+    freecam.cf = freecam.cf + moveWorld * sp
+    -- ФИКС FREECAM: мышь через GetMouseDelta
+    local md = UIS:GetMouseDelta()
+    freecam.yaw   = freecam.yaw   - md.X * 0.005
+    freecam.pitch = math.clamp(freecam.pitch - md.Y * 0.005, math.rad(-89), math.rad(89))
+    local newCF = CFrame.new(freecam.cf.Position) * CFrame.fromEulerAnglesYXZ(freecam.pitch, freecam.yaw, 0)
+    freecam.cf = newCF
+    cam.CFrame = newCF
+end
+pcall(function()
+    RunService:BindToRenderStep("RV_Freecam", Enum.RenderPriority.Camera.Value + 1, freecamStep)
+end)
+
+--=====================================================================
+--  ★ ПРЕДИКТ (Часть C)
+--=====================================================================
+local predictHistory = {}   -- [rig] = { samples = {...}, last = pos }
+
+local function getVelocityOfTarget(rig)
+    -- приоритет: AssemblyLinearVelocity из HRP
+    local root = rig:FindFirstChild("HumanoidRootPart")
+    if root and root.AssemblyLinearVelocity then
+        return root.AssemblyLinearVelocity
+    end
+    -- fallback: history
+    local hist = predictHistory[rig]
+    if hist and #hist.samples >= 2 then
+        local first = hist.samples[1]
+        local last  = hist.samples[#hist.samples]
+        local dt = last.t - first.t
+        if dt > 0.01 then
+            return (last.pos - first.pos) / dt
+        end
+    end
+    return Vector3.zero
+end
+
+local function pushHistory(rig, pos)
+    local h = predictHistory[rig]
+    if not h then h = { samples = {} }; predictHistory[rig] = h end
+    table.insert(h.samples, { t = os.clock(), pos = pos })
+    -- держим ~10 сэмплов
+    while #h.samples > 10 do table.remove(h.samples, 1) end
+end
+
+local function getPing()
+    local ok, val = pcall(function()
+        return Stats.Network.ServerStatsItem["Data Ping"]:GetValue() / 1000
+    end)
+    if ok and type(val) == "number" then return val end
+    return 0
+end
+
+local function predictPosition(rig, currentPos)
+    -- ★ ПРЕДИКТ
+    if CFG.AimPrediction <= 0 and CFG.AimPingComp <= 0 then return currentPos end
+    local vel = getVelocityOfTarget(rig)
+    -- если стоит — не дёргаем
+    if vel.Magnitude < 3 then return currentPos end
+    local lead = getPing() + CFG.AimPrediction + CFG.AimPingComp
+    return currentPos + vel * lead
+end
+
+--=====================================================================
+--  ★ АИМБОТ ТОЛЬКО ПО КНОПКЕ (Часть B)
+--=====================================================================
+local Aim = { lastTrigger = 0, lastShot = 0, aimbotLocked = false }
+
+-- ФИКС АИМБОТ-КНОПКА: aiming = ПКМ или бинд
+local function isAiming()
+    if CFG.AimMouseOnly then
+        return UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton2)
+            or (CFG.AimBind and UIS:IsKeyDown(CFG.AimBind))
+    else
+        return CFG.AimBind and UIS:IsKeyDown(CFG.AimBind) or false
+    end
+end
+
+local function getAimTarget()
+    local mouse = UIS:GetMouseLocation()
+    local best, bestScore = nil, math.huge
+    for _, rig in ipairs(H.getTargets()) do
+        if not H.isAlive(rig) then continue end
+        local aimPos = getAimPointPos(rig)
+        if not aimPos then continue end
+        -- обновляем историю + предикт
+        pushHistory(rig, aimPos)
+        local predictedPos = predictPosition(rig, aimPos)
+        local dist = (predictedPos - Camera.CFrame.Position).Magnitude
+        if dist > CFG.AimDist then continue end
+        if CFG.AimVisibleOnly then
+            local part = getAimPointPart(rig)
+            if not H.visible(rig, part) then continue end
+        end
+        local sp, on = Camera:WorldToViewportPoint(predictedPos)
+        if not on then continue end
+        local fovD = (Vector2.new(sp.X, sp.Y) - mouse).Magnitude
+        if fovD > CFG.AimFOV then continue end
+        if fovD < bestScore then
+            bestScore = fovD
+            best = { rig = rig, pos = predictedPos, rawPos = aimPos }
+        end
+    end
+    return best
+end
+
+-- Проверка lock по углу
+local function updateLock(t)
+    if not t then Aim.aimbotLocked = false; return end
+    local camDir   = Camera.CFrame.LookVector
+    local toTarget = (t.pos - Camera.CFrame.Position).Unit
+    local angle    = math.deg(math.acos(math.clamp(camDir:Dot(toTarget), -1, 1)))
+    Aim.aimbotLocked = angle <= CFG.AimLockAngle
+end
+
+-- Основной цикл аимбота
+RunService.RenderStepped:Connect(function()
+    -- ФИКС АИМБОТ-КНОПКА: не наводимся, если:
+    if not CFG.AimEnabled then Aim.aimbotLocked = false; return end
+    if freecam.active then Aim.aimbotLocked = false; return end
+    if not isAiming() then Aim.aimbotLocked = false; return end
+    local cam = Workspace.CurrentCamera
+    if not cam or not cam.Parent then return end
+
+    local t = getAimTarget()
+    updateLock(t)
+    if not t then return end
+
+    local targetCF = CFrame.new(Camera.CFrame.Position, t.pos)
+    if CFG.AimSmooth <= 0 then
+        Camera.CFrame = targetCF
+    else
+        Camera.CFrame = Camera.CFrame:Lerp(targetCF, math.clamp(1 - CFG.AimSmooth, 0, 1))
+    end
+end)
+
+--=====================================================================
+--  ★ АВТОШОТ (Часть D)
+--=====================================================================
+local shotErrorLogged = false
+local function tryShoot()
+    local tool = LP.Character and LP.Character:FindFirstChildOfClass("Tool")
+    -- 1) Activate
+    if tool and type(tool.Activate) == "function" then
+        local ok = pcall(function() tool:Activate() end)
+        if ok then return true end
+    end
+    -- 2) VIM как fallback
+    local ok = pcall(function()
+        local mp = UIS:GetMouseLocation()
+        VIM:SendMouseButtonEvent(mp.X, mp.Y, 0, true, game, 0)
+        task.wait(0.01)
+        VIM:SendMouseButtonEvent(mp.X, mp.Y, 0, false, game, 0)
+    end)
+    if not ok and not shotErrorLogged then
+        shotErrorLogged = true
+        warn("[AutoShoot] не удалось выстрелить ни одним способом")
+    end
+    return ok
+end
+
+RunService.RenderStepped:Connect(function()
+    -- ★ АВТОШОТ: все условия
+    if not CFG.AutoShootEnabled then return end
+    if not CFG.AimEnabled then return end
+    if freecam.active then return end
+    if not isAiming() then return end
+    if not Aim.aimbotLocked then return end
+    if tick() - Aim.lastShot < CFG.AutoShootDelay then return end
+    Aim.lastShot = tick()
+    safeCall(tryShoot)
+end)
+
+--=====================================================================
+--  TRIGGERBOT (отдельно, как было)
+--=====================================================================
+RunService.RenderStepped:Connect(function()
+    if not CFG.TriggerEnabled then return end
+    if freecam.active then return end
+    if tick() - Aim.lastTrigger < CFG.TriggerDelay then return end
+    local t = getAimTarget()
+    if not t then return end
+    local sp = Camera:WorldToViewportPoint(t.pos)
+    local mp = UIS:GetMouseLocation()
+    if (Vector2.new(sp.X, sp.Y) - mp).Magnitude < 40 then
+        Aim.lastTrigger = tick()
+        safeCall(function()
+            VIM:SendMouseButtonEvent(mp.X, mp.Y, 0, true, game, 0)
+            task.wait(0.01)
+            VIM:SendMouseButtonEvent(mp.X, mp.Y, 0, false, game, 0)
+        end)
+    end
+end)
+
+-- FOV круг
+local fovCircle = D_new("Circle")
+if fovCircle then
+    fovCircle.Thickness=1; fovCircle.NumSides=64; fovCircle.Transparency=0.6; fovCircle.Visible=false
+end
+RunService.RenderStepped:Connect(function()
+    if not fovCircle then return end
+    if CFG.AimEnabled and isAiming() and not freecam.active then
+        fovCircle.Position=UIS:GetMouseLocation()
+        fovCircle.Radius=CFG.AimFOV
+        fovCircle.Color=Color3.fromRGB(255,140,0)
+        fovCircle.Visible=true
+    else
+        fovCircle.Visible=false
+    end
+end)
+
+--=====================================================================
+--  NOCLIP
+--=====================================================================
+local function setNoclip(state)
+    local ch = LP.Character
+    if not ch then return end
+    for _,p in ipairs(ch:GetDescendants()) do
+        if p:IsA("BasePart") then p.CanCollide = not state end
+    end
+end
+LP.CharacterAdded:Connect(function()
+    task.wait(1); setNoclip(CFG.NoclipEnabled)
+end)
+
+--=====================================================================
+--  INVENTORY (кратко)
+--=====================================================================
+local invGui = Instance.new("ScreenGui")
+invGui.Name="RV_Inv"; invGui.ResetOnSpawn=false; invGui.IgnoreGuiInset=true; invGui.DisplayOrder=9998
+pcall(function() invGui.Parent = game:GetService("CoreGui") end)
+if not invGui.Parent then invGui.Parent = LP:WaitForChild("PlayerGui") end
+
+local invFrame = Instance.new("Frame", invGui)
+invFrame.AnchorPoint=Vector2.new(1,0); invFrame.Position=UDim2.new(1,-20,0,300)
+invFrame.Size=UDim2.new(0,260,0,300)
+invFrame.BackgroundColor3=Color3.fromRGB(20,20,26); invFrame.BackgroundTransparency=0.3
+invFrame.BorderSizePixel=0; invFrame.Visible=false
+Instance.new("UICorner", invFrame).CornerRadius = UDim.new(0,10)
+Instance.new("UIStroke", invFrame).Color = Color3.fromRGB(255,140,0)
+local invTitle = Instance.new("TextLabel", invFrame)
+invTitle.Size=UDim2.new(1,0,0,28); invTitle.BackgroundTransparency=1
+invTitle.Font=Enum.Font.GothamBold; invTitle.TextSize=13
+invTitle.TextColor3=Color3.fromRGB(255,240,220); invTitle.Text="Инвентарь цели"
+local invList = Instance.new("ScrollingFrame", invFrame)
+invList.Position=UDim2.new(0,8,0,32); invList.Size=UDim2.new(1,-16,1,-40)
+invList.BackgroundTransparency=1; invList.BorderSizePixel=0; invList.ScrollBarThickness=4
+invList.CanvasSize=UDim2.new(0,0,0,0); invList.AutomaticCanvasSize=Enum.AutomaticSize.Y
+Instance.new("UIListLayout", invList).Padding = UDim.new(0,4)
+
+local ITEM_DATA
+pcall(function()
+    local m = RS:FindFirstChild("InventorySystem") and RS.InventorySystem:FindFirstChild("ItemData")
+    if m and m:IsA("ModuleScript") then ITEM_DATA = require(m) end
+end)
+local function itemName(id)
+    if ITEM_DATA and ITEM_DATA[id] and ITEM_DATA[id].Name then return ITEM_DATA[id].Name end
+    return tostring(id)
+end
+local function renderInv(inv)
+    for _,c in ipairs(invList:GetChildren()) do if c:IsA("TextLabel") then c:Destroy() end end
+    local any=false
+    for _,d in pairs(inv) do
+        if type(d)=="table" and d.Item then
+            any=true
+            local l=Instance.new("TextLabel", invList)
+            l.Size=UDim2.new(1,0,0,22); l.BackgroundTransparency=1
+            l.Font=Enum.Font.Gotham; l.TextSize=12
+            l.TextXAlignment=Enum.TextXAlignment.Left
+            l.TextColor3=Color3.fromRGB(255,240,220)
+            l.Text=string.format("%s x%d", itemName(d.Item), d.Amount or 1)
+        end
+    end
+    if not any then
+        local l=Instance.new("TextLabel", invList)
+        l.Size=UDim2.new(1,0,0,22); l.BackgroundTransparency=1
+        l.Font=Enum.Font.Gotham; l.TextSize=12; l.TextColor3=Color3.fromRGB(200,160,120)
+        l.Text="Пусто"
+    end
+    invFrame.Visible=true
+end
+
+task.spawn(function()
+    local sys = RS:WaitForChild("InventorySystem", 10); if not sys then return end
+    local sync = sys:WaitForChild("InventorySync", 10)
+    if sync and sync:IsA("RemoteEvent") then
+        sync.OnClientEvent:Connect(function(userId, inv)
+            if not CFG.InventoryEnabled then return end
+            local t = getAimTarget(); if not t then return end
+            local p = Players:GetPlayerFromCharacter(t.rig)
+            if p and p.UserId == userId then renderInv(inv) end
+        end)
+    end
+end)
+
+--=====================================================================
+--  ГЛОБАЛЬНЫЕ БИНДЫ
+--=====================================================================
+local menuOpen = false
+local openMenu, closeMenu
+
+UIS.InputBegan:Connect(function(input, gp)
+    if gp then return end
+    if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
+    local kc = input.KeyCode
+
+    if kc == CFG.MenuBind then
+        if menuOpen then closeMenu() else openMenu() end
+        return
+    end
+
+    if kc == CFG.EspBind then
+        CFG.EspEnabled = not CFG.EspEnabled
+        Notify("ESP", "", CFG.EspEnabled)
+        queueSave()
+    end
+    if kc == CFG.XRayBind then
+        CFG.XRayEnabled = not CFG.XRayEnabled
+        updateXray()
+        Notify("XRay", "", CFG.XRayEnabled)
+        queueSave()
+    end
+    if kc == CFG.FreecamBind then
+        CFG.FreecamEnabled = not CFG.FreecamEnabled
+        if CFG.FreecamEnabled then startFreecam() else stopFreecam() end
+        queueSave()
+    end
+    if kc == CFG.NoclipBind then
+        CFG.NoclipEnabled = not CFG.NoclipEnabled
+        setNoclip(CFG.NoclipEnabled)
+        Notify("Noclip", "⚠", CFG.NoclipEnabled)
+        queueSave()
+    end
+    if kc == CFG.InventoryBind then
+        CFG.InventoryEnabled = not CFG.InventoryEnabled
+        Notify("Inventory", "", CFG.InventoryEnabled)
+        if not CFG.InventoryEnabled then invFrame.Visible = false end
+        queueSave()
+    end
+end)
+
+--=====================================================================
+--  МЕНЮ (5 колонок; добавляем новые слайдеры/тумблеры)
+--=====================================================================
+local menuGui = Instance.new("ScreenGui")
+menuGui.Name="RV_Menu"; menuGui.ResetOnSpawn=false; menuGui.IgnoreGuiInset=true
+menuGui.DisplayOrder=10000
+pcall(function() menuGui.Parent = game:GetService("CoreGui") end)
+if not menuGui.Parent then menuGui.Parent = LP:WaitForChild("PlayerGui") end
+_G.RV_MENU_GUI = menuGui
+
+local menu = Instance.new("Frame", menuGui)
+menu.AnchorPoint=Vector2.new(0.5,0.5); menu.Position=UDim2.new(0.5,0,0.5,0)
+menu.Size=UDim2.new(0,1000,0,560)
+menu.BackgroundColor3=Color3.fromRGB(35,22,12)
+menu.BackgroundTransparency=0.25; menu.BorderSizePixel=0
+menu.Visible=false; menu.ClipsDescendants=true
+Instance.new("UICorner", menu).CornerRadius = UDim.new(0,12)
+local mS=Instance.new("UIStroke", menu); mS.Color=Color3.fromRGB(255,140,0); mS.Thickness=1.5
+
+local titleBar=Instance.new("Frame", menu)
+titleBar.Size=UDim2.new(1,0,0,40)
+titleBar.BackgroundColor3=Color3.fromRGB(139,90,43)
+titleBar.BackgroundTransparency=0.4; titleBar.BorderSizePixel=0
+local tl=Instance.new("TextLabel", titleBar)
+tl.Size=UDim2.new(1,-80,1,0); tl.Position=UDim2.new(0,14,0,0)
+tl.BackgroundTransparency=1; tl.Font=Enum.Font.GothamBold; tl.TextSize=16
+tl.TextXAlignment=Enum.TextXAlignment.Left
+tl.TextColor3=Color3.fromRGB(255,240,220); tl.Text="🍊 RivalVisuals v1.3"
+
+local closeBtn=Instance.new("TextButton", titleBar)
+closeBtn.AnchorPoint=Vector2.new(1,0.5); closeBtn.Position=UDim2.new(1,-8,0.5,0)
+closeBtn.Size=UDim2.new(0,24,0,24)
+closeBtn.BackgroundColor3=Color3.fromRGB(220,60,60)
+closeBtn.Text="×"; closeBtn.TextColor3=Color3.new(1,1,1)
+closeBtn.Font=Enum.Font.GothamBold; closeBtn.TextSize=18; closeBtn.BorderSizePixel=0
+Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0,6)
+
+local content=Instance.new("Frame", menu)
+content.Position=UDim2.new(0,8,0,48); content.Size=UDim2.new(1,-16,1,-100)
+content.BackgroundTransparency=1
+
+local TABS={"Visual","World","Particles","Utils","Client"}; local cols={}
+local csz=1/#TABS
+for i,tab in ipairs(TABS) do
+    local col=Instance.new("Frame", content)
+    col.Position=UDim2.new((i-1)*csz,0,0,0); col.Size=UDim2.new(csz,-6,1,0)
+    col.BackgroundColor3=Color3.fromRGB(139,90,43); col.BackgroundTransparency=0.7
+    col.BorderSizePixel=0
+    Instance.new("UICorner", col).CornerRadius = UDim.new(0,8)
+    local lbl=Instance.new("TextLabel", col)
+    lbl.Size=UDim2.new(1,0,0,26); lbl.BackgroundTransparency=1
+    lbl.Font=Enum.Font.GothamBold; lbl.TextSize=12
+    lbl.TextColor3=Color3.fromRGB(255,140,0); lbl.Text=tab
+    local sc=Instance.new("ScrollingFrame", col)
+    sc.Position=UDim2.new(0,6,0,28); sc.Size=UDim2.new(1,-12,1,-34)
+    sc.BackgroundTransparency=1; sc.BorderSizePixel=0; sc.ScrollBarThickness=4
+    sc.CanvasSize=UDim2.new(0,0,0,0); sc.AutomaticCanvasSize=Enum.AutomaticSize.Y
+    Instance.new("UIListLayout", sc).Padding = UDim.new(0,4)
+    cols[tab]=sc
+end
+
+local function addToggle(parent, label, cfgKey, bindKey)
+    local holder=Instance.new("Frame", parent)
+    holder.Size=UDim2.new(1,-4,0,30); holder.BackgroundTransparency=1
+    local btn=Instance.new("TextButton", holder)
+    btn.Size=UDim2.new(0.7,-2,1,0)
+    btn.BackgroundColor3 = CFG[cfgKey] and Color3.fromRGB(60,200,100) or Color3.fromRGB(60,40,20)
+    btn.TextColor3=Color3.fromRGB(255,240,220)
+    btn.Font=Enum.Font.GothamSemibold; btn.TextSize=12
+    btn.Text = label.." ["..(CFG[cfgKey] and "ON" or "OFF").."]"
+    btn.BorderSizePixel=0
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0,6)
+    local bindBtn=Instance.new("TextButton", holder)
+    bindBtn.Position=UDim2.new(0.7,2,0,0); bindBtn.Size=UDim2.new(0.3,-2,1,0)
+    bindBtn.BackgroundColor3=Color3.fromRGB(80,60,40)
+    bindBtn.TextColor3=Color3.fromRGB(255,200,140)
+    bindBtn.Font=Enum.Font.GothamBold; bindBtn.TextSize=11
+    bindBtn.BorderSizePixel=0
+    Instance.new("UICorner", bindBtn).CornerRadius = UDim.new(0,6)
+    bindBtn.Text = (bindKey and CFG[bindKey]) and CFG[bindKey].Name or "Bind"
+
+    btn.MouseButton1Click:Connect(function()
+        CFG[cfgKey] = not CFG[cfgKey]
+        btn.BackgroundColor3 = CFG[cfgKey] and Color3.fromRGB(60,200,100) or Color3.fromRGB(60,40,20)
+        btn.Text = label.." ["..(CFG[cfgKey] and "ON" or "OFF").."]"
+        Notify(label, "", CFG[cfgKey])
+        queueSave()
+        if cfgKey == "XRayEnabled" then updateXray() end
+        if cfgKey == "NoclipEnabled" then setNoclip(CFG[cfgKey]) end
+        if cfgKey == "FreecamEnabled" then
+            if CFG.FreecamEnabled then startFreecam() else stopFreecam() end
+        end
+    end)
+    if bindKey then
+        bindBtn.MouseButton1Click:Connect(function()
+            bindBtn.Text = "Жми..."
+            local c
+            c = UIS.InputBegan:Connect(function(inp, gpe)
+                if gpe then return end
+                if inp.UserInputType == Enum.UserInputType.Keyboard then
+                    CFG[bindKey] = inp.KeyCode
+                    bindBtn.Text = inp.KeyCode.Name
+                    queueSave()
+                    Notify(label, "Bind: "..inp.KeyCode.Name, true)
+                    c:Disconnect()
+                end
+            end)
+        end)
+    end
+end
+
+local function addSlider(parent, label, cfgKey, min, max, suffix, isInt)
+    local holder=Instance.new("Frame", parent)
+    holder.Size=UDim2.new(1,-4,0,44); holder.BackgroundTransparency=1
+    local lbl=Instance.new("TextLabel", holder)
+    lbl.Size=UDim2.new(1,0,0,18); lbl.BackgroundTransparency=1
+    lbl.Font=Enum.Font.GothamSemibold; lbl.TextSize=11
+    lbl.TextXAlignment=Enum.TextXAlignment.Left
+    lbl.TextColor3=Color3.fromRGB(255,240,220)
+    lbl.Text=string.format("%s: %s%s", label, tostring(CFG[cfgKey]), suffix or "")
+    local bar=Instance.new("Frame", holder)
+    bar.Position=UDim2.new(0,0,0,22); bar.Size=UDim2.new(1,0,0,8)
+    bar.BackgroundColor3=Color3.fromRGB(60,40,20); bar.BorderSizePixel=0
+    Instance.new("UICorner", bar).CornerRadius = UDim.new(0,4)
+    local fill=Instance.new("Frame", bar)
+    fill.BackgroundColor3=Color3.fromRGB(255,140,0)
+    fill.Size=UDim2.new((CFG[cfgKey]-min)/(max-min),0,1,0); fill.BorderSizePixel=0
+    Instance.new("UICorner", fill).CornerRadius = UDim.new(0,4)
+    bar.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            local conn
+            conn = UIS.InputChanged:Connect(function(inp)
+                if inp.UserInputType == Enum.UserInputType.MouseMovement then
+                    local x = math.clamp((inp.Position.X - bar.AbsolutePosition.X) / bar.AbsoluteSize.X, 0, 1)
+                    local v = min + (max - min) * x
+                    if isInt then v = math.floor(v+0.5) end
+                    CFG[cfgKey] = v
+                    fill.Size = UDim2.new(x,0,1,0)
+                    lbl.Text = string.format("%s: %s%s", label, tostring(v), suffix or "")
+                end
+            end)
+            UIS.InputEnded:Connect(function(i)
+                if i.UserInputType == Enum.UserInputType.MouseButton1 then
+                    conn:Disconnect(); queueSave()
+                end
+            end)
+        end
+    end)
+end
+
+-- Visual
+local vt = cols.Visual
+addToggle(vt, "ESP", "EspEnabled", "EspBind")
+addToggle(vt, "Box", "EspBox")
+addToggle(vt, "Skeleton", "EspSkeleton")
+addToggle(vt, "Name", "EspName")
+addToggle(vt, "HP", "EspHP")
+addToggle(vt, "Distance", "EspDistance")
+addToggle(vt, "Visible Only", "EspVisibleOnly")
+addSlider(vt, "ESP Players Dist", "EspPlayersDist", 10, 1000, "m", true)
+addSlider(vt, "ESP Objects Dist", "EspObjectsDist", 10, 1000, "m", true)
+
+-- World
+local wt = cols.World
+addToggle(wt, "Loot", "ObjLoot")
+addToggle(wt, "Furnace", "ObjFurnace")
+addToggle(wt, "Bench", "ObjBench")
+addToggle(wt, "Door", "ObjDoor")
+addToggle(wt, "Turret", "ObjTurret")
+addToggle(wt, "Spawn", "ObjSpawn")
+addToggle(wt, "Drone", "ObjDrone")
+
+-- Particles
+addToggle(cols.Particles, "XRay", "XRayEnabled", "XRayBind")
+
+-- Utils
+local ut = cols.Utils
+addToggle(ut, "Aimbot", "AimEnabled")
+addToggle(ut, "Aim on RMB", "AimMouseOnly")           -- ★ ФИКС АИМБОТ-КНОПКА
+addSlider(ut, "Aim Smooth", "AimSmooth", 0, 1)
+addSlider(ut, "Aim FOV", "AimFOV", 20, 500, "px", true)
+addSlider(ut, "Aim Dist", "AimDist", 10, 500, "m", true)
+addSlider(ut, "Prediction", "AimPrediction", 0, 0.5, "s")     -- ★ ПРЕДИКТ
+addSlider(ut, "Ping Comp", "AimPingComp", 0, 0.2, "s")        -- ★ ПРЕДИКТ
+addSlider(ut, "Lock Angle", "AimLockAngle", 0, 20, "°")       -- ★ АВТОШОТ
+addToggle(ut, "AutoShoot", "AutoShootEnabled")                -- ★ АВТОШОТ
+addSlider(ut, "AutoShoot Delay", "AutoShootDelay", 0.02, 0.5, "s")
+addToggle(ut, "Triggerbot", "TriggerEnabled", "TriggerBind")
+addSlider(ut, "Trigger Delay", "TriggerDelay", 0.01, 0.5, "s")
+addSlider(ut, "Trigger Dist", "TriggerDist", 10, 500, "m", true)
+
+-- Client
+local ct = cols.Client
+addToggle(ct, "Freecam", "FreecamEnabled", "FreecamBind")
+addSlider(ct, "Freecam Speed", "FreecamSpeed", 0.5, 10)
+addToggle(ct, "Noclip", "NoclipEnabled", "NoclipBind")
+addToggle(ct, "Inventory", "InventoryEnabled", "InventoryBind")
+
+local resetBtn=Instance.new("TextButton", ct)
+resetBtn.Size=UDim2.new(1,-4,0,30)
+resetBtn.BackgroundColor3=Color3.fromRGB(200,60,60); resetBtn.TextColor3=Color3.new(1,1,1)
+resetBtn.Font=Enum.Font.GothamBold; resetBtn.TextSize=12
+resetBtn.Text="Сброс конфига"; resetBtn.BorderSizePixel=0
+Instance.new("UICorner", resetBtn).CornerRadius = UDim.new(0,6)
+resetBtn.MouseButton1Click:Connect(function()
+    if hasFS and isfile(CONFIG_PATH) then pcall(delfile, CONFIG_PATH) end
+    _G.RV_CFG = nil
+    Notify("Config", "Сброшен — перезапусти", false)
+end)
+
+local unloadBtn=Instance.new("TextButton", menu)
+unloadBtn.AnchorPoint=Vector2.new(1,0); unloadBtn.Position=UDim2.new(1,-10,1,-44)
+unloadBtn.Size=UDim2.new(0,90,0,32)
+unloadBtn.BackgroundColor3=Color3.fromRGB(220,60,60); unloadBtn.TextColor3=Color3.new(1,1,1)
+unloadBtn.Font=Enum.Font.GothamBold; unloadBtn.TextSize=12
+unloadBtn.Text="Unload"; unloadBtn.BorderSizePixel=0
+Instance.new("UICorner", unloadBtn).CornerRadius = UDim.new(0,6)
+unloadBtn.MouseButton1Click:Connect(function() _G.RV_UNLOAD() end)
+
+openMenu = function()
+    menuOpen = true; menu.Visible = true
+    menu.Size = UDim2.new(0,0,0,0)
+    TweenSvc:Create(menu, TweenInfo.new(0.25, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+        Size = UDim2.new(0,1000,0,560)
+    }):Play()
+end
+closeMenu = function()
+    menuOpen = false
+    local t = TweenSvc:Create(menu, TweenInfo.new(0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+        Size = UDim2.new(0,0,0,0)
+    })
+    t:Play(); t.Completed:Connect(function() menu.Visible = false end)
+end
+closeBtn.MouseButton1Click:Connect(closeMenu)
+
+--=====================================================================
+--  UNLOAD
+--=====================================================================
+_G.RV_UNLOAD = function()
+    for _,b in pairs(ESP.boxes) do for _,l in pairs(b) do D_remove(l) end end
+    for _,s in pairs(ESP.skel) do for _,l in ipairs(s) do D_remove(l) end end
+    for _,t in pairs(ESP.texts) do D_remove(t) end
+    for _,t in pairs(ESP.objTxt) do D_remove(t) end
+    for _,h in pairs(ESP.hl) do pcall(function() h:Destroy() end) end
+    for _,h in pairs(ESP.objHL) do pcall(function() h:Destroy() end) end
+    for _,h in ipairs(xrayHLs) do pcall(function() h:Destroy() end) end
+    if fovCircle then D_remove(fovCircle) end
+    pcall(function() notifGui:Destroy() end)
+    pcall(function() invGui:Destroy() end)
+    pcall(function() menuGui:Destroy() end)
+    setNoclip(false)
+    if freecam.active then stopFreecam() end
+    pcall(function() RunService:UnbindFromRenderStep("RV_Freecam") end)
+    saveConfig()
+    _G.RV_LOADED = false
+    print("[RivalVisuals] unloaded")
+end
+
+Notify("RivalVisuals", "Загружен", true)
+print("[RivalVisuals] v1.3 loaded. Drawing_new=", Drawing_new_ok, " hasFS=", hasFS)
