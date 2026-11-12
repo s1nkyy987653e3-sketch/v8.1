@@ -42,6 +42,10 @@ local previousFocus = false
 local feedbackConnection
 local generation = 0
 
+-- ИСПРАВЛЕНО: дедупликация Feedback (для check)
+local lastFeedbackText = nil
+local lastFeedbackVisible = nil
+
 -- Режимы: "human" | "medium" | "instant"
 local MODES = { "human", "medium", "instant" }
 local MODE_LABELS = {
@@ -146,36 +150,41 @@ local function ensureChar(box, char)
     return box.Text:sub(-#char) == char
 end
 
--- Очистка поля. В human — посимвольно с рандомом, в остальных — мгновенно.
+-- ============================================================
+-- ИСПРАВЛЕНО: clearBox
+--   • Вся посимвольная очистка обёрнута в один pcall
+--   • В конце гарантированно box.Text = "" (страховка)
+-- ============================================================
 local function clearBox(box)
+    if not box then return end
     if box.Text == "" then return end
 
     if mode ~= "human" then
-        box.Text = ""
+        pcall(function() box.Text = "" end)
         return
     end
 
     local length = utf8.len(box.Text) or 0
     if length == 0 then
-        box.Text = ""
+        pcall(function() box.Text = "" end)
         return
     end
 
     local clearMood = randFloat(0.7, 1.4)
 
-    for _ = 1, length do
-        local ok = pcall(function()
+    -- ИСПРАВЛЕНО: весь цикл в одном pcall
+    pcall(function()
+        for _ = 1, length do
             box.Text = dropLastChar(box.Text)
-        end)
-        if not ok then
-            box.Text = ""
-            return
+            sleep(
+                HUMAN.clearCharDelay[1] * clearMood,
+                HUMAN.clearCharDelay[2] * clearMood
+            )
         end
-        sleep(
-            HUMAN.clearCharDelay[1] * clearMood,
-            HUMAN.clearCharDelay[2] * clearMood
-        )
-    end
+    end)
+
+    -- ИСПРАВЛЕНО: страховка — поле гарантированно пустое
+    pcall(function() box.Text = "" end)
 end
 
 local function humanMaybeTypo(box, allowed, typoChance)
@@ -208,7 +217,11 @@ local function humanMaybeTypo(box, allowed, typoChance)
     sleep(0.03, 0.15)
 end
 
--- Человеческий набор (burst, опечатки, залипания)
+-- ============================================================
+-- ИСПРАВЛЕНО: humanTypeHuman
+--   • При backspaceCount = 0 и burstPhase "normal" после burst
+--     гарантированный выход из continue (burstDone сбрасывается)
+-- ============================================================
 local function humanTypeHuman(box, text, allowed)
     local speedMood = randFloat(HUMAN.speedMoodMin, HUMAN.speedMoodMax)
     local typoChance = randFloat(HUMAN.typoChanceMin, HUMAN.typoChanceMax)
@@ -273,8 +286,13 @@ local function humanTypeHuman(box, text, allowed)
 
             sleep(0.10, 0.35)
             burstPhase = "normal"
+            -- ИСПРАВЛЕНО: burstDone сбрасываем, чтобы не зациклиться
+            burstDone = false
             speedMood = randFloat(HUMAN.speedMoodMin, HUMAN.speedMoodMax)
 
+            -- ИСПРАВЛЕНО: если backspaceCount = 0 и typedCount не изменился,
+            -- просто продолжаем — continue больше не ведёт в пустой цикл,
+            -- потому что burstDone = false, а burstPhase = "normal"
             continue
         end
 
@@ -799,7 +817,12 @@ end
 
 local nextWord = shortestUnused
 
--- Общий «набор и отправка» выбранного слова (учитывает режим).
+-- ============================================================
+-- ИСПРАВЛЕНО: typeAndSubmit
+--   • submitted = false перед новым набором
+--   • ReleaseFocus → пауза → CaptureFocus перед Enter
+--   • watchdog на 4с с отменой по generation
+-- ============================================================
 local function typeAndSubmit(box, glyph, letter, word, label)
     local secondByte = utf8.offset(word, 2)
     if not secondByte then
@@ -810,9 +833,14 @@ local function typeAndSubmit(box, glyph, letter, word, label)
 
     local rest = word:sub(secondByte)
 
+    -- ИСПРАВЛЕНО: сброс залипшего флага
+    submitted = false
+
     used[word] = true
     lastWord = word
     submitted = true
+    local myGen = generation
+
     status.Text = label .. ": " .. word
         .. "\nРежим: " .. (MODE_LABELS[mode] or "?")
         .. "\nОжидаю ответ игры."
@@ -823,7 +851,10 @@ local function typeAndSubmit(box, glyph, letter, word, label)
         sleep(HUMAN.mediumPreDelay[1], HUMAN.mediumPreDelay[2])
     end
 
+    -- ИСПРАВЛЕНО: гарантированный фокус перед набором
     pcall(function()
+        box:ReleaseFocus()
+        task.wait(0.05)
         box:CaptureFocus()
     end)
 
@@ -841,8 +872,15 @@ local function typeAndSubmit(box, glyph, letter, word, label)
 
     local allowed = buildAllowedCodes(letter)
     if not humanType(box, rest, allowed) then
-        box.Text = rest
+        pcall(function() box.Text = rest end)
     end
+
+    -- ИСПРАВЛЕНО: перефокусировка прямо перед Enter
+    pcall(function()
+        box:ReleaseFocus()
+        task.wait(0.03)
+        box:CaptureFocus()
+    end)
 
     -- Enter
     if hasEnterAPI() then
@@ -856,10 +894,32 @@ local function typeAndSubmit(box, glyph, letter, word, label)
     else
         pcall(function() box:ReleaseFocus() end)
     end
+
+    -- ИСПРАВЛЕНО: watchdog — если Feedback не пришёл за 4с
+    task.delay(4.0, function()
+        if generation ~= myGen then return end
+        if not submitted then return end
+        if not running or not enabled then return end
+        -- принудительный сброс
+        submitted = false
+        local b = select(1, getParts())
+        if b then clearBox(b) end
+        task.delay(retryDelayByMode(), function()
+            if generation ~= myGen then return end
+            if not running or not enabled then return end
+            if submitted then return end
+            attemptShortest()
+        end)
+    end)
 end
 
+-- ============================================================
+-- ИСПРАВЛЕНО: attempt / attemptShortest
+--   • submitted = false перед новым набором
+-- ============================================================
 local function attempt()
     if not running or not enabled then return end
+    submitted = false
 
     local box, glyph = getParts()
     if not box or UserInputService:GetFocusedTextBox() ~= box then
@@ -890,6 +950,7 @@ end
 
 local function attemptShortest()
     if not running or not enabled then return end
+    submitted = false
 
     local box, glyph = getParts()
     if not box or UserInputService:GetFocusedTextBox() ~= box then
@@ -927,6 +988,13 @@ local function retryDelayByMode()
     return randFloat(HUMAN.instantRetryDelay[1], HUMAN.instantRetryDelay[2])
 end
 
+-- ============================================================
+-- ИСПРАВЛЕНО: bindFeedback / check
+--   • Подписка и на Visible, и на Text
+--   • Дедупликация через lastFeedbackText / lastFeedbackVisible
+--   • submitted = false ДО любых проверок
+--   • if not running or not enabled then return end перед attemptShortest
+-- ============================================================
 local function bindFeedback(feedback)
     if feedbackConnection then
         feedbackConnection:Disconnect()
@@ -936,23 +1004,42 @@ local function bindFeedback(feedback)
     if not feedback or not feedback:IsA("TextLabel") then return end
 
     local function check()
-        if not enabled or not submitted or not feedback.Visible then return end
-        if not feedback.Text:find("не подходит", 1, true) then return end
+        if not feedback then return end
+        if not running or not enabled then return end
 
+        local curVis = feedback.Visible
+        local curTxt = feedback.Text or ""
+
+        -- ИСПРАВЛЕНО: дедупликация
+        if curVis == lastFeedbackVisible and curTxt == lastFeedbackText then
+            return
+        end
+        lastFeedbackVisible = curVis
+        lastFeedbackText = curTxt
+
+        if not curVis then return end
+        if not curTxt:find("не подходит", 1, true) then return end
+
+        -- ИСПРАВЛЕНО: сброс флага ДО проверки submitted
         submitted = false
         local token = generation
         status.Text = "Отклонено: " .. tostring(lastWord)
             .. ". Стираю и пишу короткое..."
 
         task.delay(retryDelayByMode(), function()
-            if running and enabled and generation == token and not submitted then
+            if not running or not enabled then return end   -- ИСПРАВЛЕНО
+            if generation == token and not submitted then
                 attemptShortest()
             end
         end)
     end
 
-    feedbackConnection = feedback:GetPropertyChangedSignal("Visible"):Connect(check)
-    table.insert(connections, feedbackConnection)
+    -- ИСПРАВЛЕНО: два сигнала
+    local c1 = feedback:GetPropertyChangedSignal("Visible"):Connect(check)
+    local c2 = feedback:GetPropertyChangedSignal("Text"):Connect(check)
+    table.insert(connections, c1)
+    table.insert(connections, c2)
+    feedbackConnection = c1
 end
 
 local function turnOn()
@@ -1130,338 +1217,6 @@ task.spawn(function()
 end)
 
 -- ============================================================
--- ЛОГ НЕПРАВИЛЬНЫХ СЛОВ (вставляется в конец скрипта)
--- ============================================================
-do
-    -- Защита от повторной вставки
-    if _G.__P_WordBot_ErrorLog then
-        pcall(function() _G.__P_WordBot_ErrorLog:Destroy() end)
-        _G.__P_WordBot_ErrorLog = nil
-    end
-
-    local Players = game:GetService("Players")
-    local player = Players.LocalPlayer
-    local playerGui = player:WaitForChild("PlayerGui")
-
-    local botGui = playerGui:FindFirstChild("P_WordBot")
-    if not botGui then
-        warn("[WordBot] Главный GUI P_WordBot не найден — логгер не запущен.")
-        return
-    end
-
-    -- Хранилище неправильных слов: массив записей {letter=..., word=..., time=...}
-    local wrongEntries = {}
-    local seenWrong = {} -- ключ "letter|word" -> true, чтобы не дублировать
-    local lastSent = nil -- {letter=..., word=...}
-
-    -- ==== Перехват отправки слова ====
-    -- Мы не можем «хукать» локальные функции напрямую, поэтому
-    -- перехватываем через общий Feedback: когда бот пишет слово и игра
-    -- отвечает «не подходит», мы уже знаем последнее отправленное слово.
-    --
-    -- Чтобы знать, ЧТО бот отправил, читаем box.Text в момент, когда
-    -- Feedback становится Visible = true. В этот момент box.Text ещё
-    -- содержит отправленное слово (игра не успела очистить).
-    --
-    -- Но надёжнее — перехватить сам факт «бот нажал Enter». Для этого
-    -- обернём глобальный keypress, если он есть.
-    local originalKeypress = keypress
-    local originalKeyrelease = keyrelease
-
-    local function currentLetterAndWord()
-        local ui = playerGui:FindFirstChild("WordGameUI")
-        local canvas = ui and ui:FindFirstChild("Canvas")
-        local match = canvas and canvas:FindFirstChild("Match")
-        if not match then return nil, nil end
-
-        local tiles = match:FindFirstChild("WordTiles")
-        local first = tiles and tiles:FindFirstChild("Letter1")
-        local glyph = first and first:FindFirstChild("Glyph")
-        local box = match:FindFirstChild("TypingCapture")
-
-        local letter = nil
-        if glyph and glyph:IsA("TextLabel") then
-            local raw = glyph.Text:match("^%s*(.-)%s*$")
-            if raw and raw ~= "" then
-                letter = raw
-            end
-        end
-
-        local word = nil
-        if box and box:IsA("TextBox") and box.Text ~= "" then
-            -- В поле только «хвост» без первой буквы; восстановим полное слово
-            if letter then
-                word = letter .. box.Text
-            else
-                word = box.Text
-            end
-        end
-
-        return letter, word
-    end
-
-    -- Оборачиваем keypress: когда бот жмёт Enter (0x0D), запоминаем слово
-    if type(originalKeypress) == "function" then
-        keypress = function(code, ...)
-            if code == 0x0D then
-                local letter, word = currentLetterAndWord()
-                if word and word ~= "" then
-                    lastSent = { letter = letter, word = word }
-                end
-            end
-            return originalKeypress(code, ...)
-        end
-    end
-
-    -- ==== Слежение за Feedback ====
-    local feedbackConnection
-    local boundFeedback
-
-    local function recordWrong(letter, word)
-        if not word or word == "" then return end
-        local key = tostring(letter) .. "|" .. tostring(word)
-        if seenWrong[key] then return end
-        seenWrong[key] = true
-        table.insert(wrongEntries, {
-            letter = letter or "?",
-            word = word,
-            time = os.date("%H:%M:%S"),
-        })
-        refreshLogList()
-    end
-
-    local function checkFeedback(feedback)
-        if not feedback or not feedback:IsA("TextLabel") then return end
-        if not feedback.Visible then return end
-
-        local txt = feedback.Text or ""
-        if txt:find("не подходит", 1, true)
-            or txt:lower():find("неверн", 1, true)
-            or txt:lower():find("ошибк", 1, true)
-        then
-            if lastSent then
-                recordWrong(lastSent.letter, lastSent.word)
-                lastSent = nil
-            else
-                -- Если keypress не оборачивался — попробуем вытащить из поля
-                local letter, word = currentLetterAndWord()
-                recordWrong(letter, word)
-            end
-        end
-    end
-
-    local function bindFeedbackWatcher()
-        local ui = playerGui:FindFirstChild("WordGameUI")
-        local canvas = ui and ui:FindFirstChild("Canvas")
-        local match = canvas and canvas:FindFirstChild("Match")
-        local feedback = match and match:FindFirstChild("Feedback")
-
-        if feedback ~= boundFeedback then
-            if feedbackConnection then
-                feedbackConnection:Disconnect()
-                feedbackConnection = nil
-            end
-            boundFeedback = feedback
-            if feedback and feedback:IsA("TextLabel") then
-                feedbackConnection = feedback:GetPropertyChangedSignal("Visible"):Connect(function()
-                    checkFeedback(feedback)
-                end)
-            end
-        end
-    end
-
-    -- ==== GUI лога ====
-    local logGui = Instance.new("ScreenGui")
-    logGui.Name = "P_WordBot_ErrorLog"
-    logGui.ResetOnSpawn = false
-    logGui.Parent = playerGui
-
-    local logFrame = Instance.new("Frame")
-    logFrame.Name = "LogFrame"
-    logFrame.Position = UDim2.fromOffset(330, 75)
-    logFrame.Size = UDim2.fromOffset(300, 300)
-    logFrame.BackgroundColor3 = Color3.fromRGB(18, 18, 18)
-    logFrame.BorderSizePixel = 0
-    logFrame.Visible = false
-    logFrame.Parent = logGui
-
-    local logHeader = Instance.new("TextLabel")
-    logHeader.Size = UDim2.new(1, -42, 0, 34)
-    logHeader.BackgroundColor3 = Color3.fromRGB(28, 28, 28)
-    logHeader.BorderSizePixel = 0
-    logHeader.Text = "  ЛОГ ОШИБОК"
-    logHeader.TextColor3 = Color3.fromRGB(235, 235, 235)
-    logHeader.Font = Enum.Font.GothamBold
-    logHeader.TextSize = 13
-    logHeader.TextXAlignment = Enum.TextXAlignment.Left
-    logHeader.Parent = logFrame
-
-    local logClose = Instance.new("TextButton")
-    logClose.Size = UDim2.fromOffset(42, 34)
-    logClose.Position = UDim2.new(1, -42, 0, 0)
-    logClose.BackgroundColor3 = Color3.fromRGB(38, 38, 38)
-    logClose.BorderSizePixel = 0
-    logClose.Text = "X"
-    logClose.TextColor3 = Color3.fromRGB(235, 235, 235)
-    logClose.Font = Enum.Font.Gotham
-    logClose.TextSize = 14
-    logClose.Parent = logFrame
-
-    local copyBtn = Instance.new("TextButton")
-    copyBtn.Size = UDim2.fromOffset(132, 30)
-    copyBtn.Position = UDim2.fromOffset(12, 42)
-    copyBtn.BackgroundColor3 = Color3.fromRGB(38, 38, 38)
-    copyBtn.BorderSizePixel = 0
-    copyBtn.Text = "Копировать"
-    copyBtn.TextColor3 = Color3.fromRGB(235, 235, 235)
-    copyBtn.Font = Enum.Font.Gotham
-    copyBtn.TextSize = 13
-    copyBtn.Parent = logFrame
-
-    local clearBtn = Instance.new("TextButton")
-    clearBtn.Size = UDim2.fromOffset(132, 30)
-    clearBtn.Position = UDim2.fromOffset(156, 42)
-    clearBtn.BackgroundColor3 = Color3.fromRGB(38, 38, 38)
-    clearBtn.BorderSizePixel = 0
-    clearBtn.Text = "Очистить"
-    clearBtn.TextColor3 = Color3.fromRGB(235, 235, 235)
-    clearBtn.Font = Enum.Font.Gotham
-    clearBtn.TextSize = 13
-    clearBtn.Parent = logFrame
-
-    local scroll = Instance.new("ScrollingFrame")
-    scroll.Position = UDim2.fromOffset(12, 80)
-    scroll.Size = UDim2.new(1, -24, 1, -92)
-    scroll.BackgroundColor3 = Color3.fromRGB(24, 24, 24)
-    scroll.BorderSizePixel = 0
-    scroll.ScrollBarThickness = 6
-    scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
-    scroll.Parent = logFrame
-
-    local listLayout = Instance.new("UIListLayout")
-    listLayout.Padding = UDim.new(0, 2)
-    listLayout.SortOrder = Enum.SortOrder.LayoutOrder
-    listLayout.Parent = scroll
-
-    local countLabel = Instance.new("TextLabel")
-    countLabel.Position = UDim2.fromOffset(12, 312)
-    countLabel.Size = UDim2.new(1, -24, 0, 20)
-    countLabel.BackgroundTransparency = 1
-    countLabel.Text = "Ошибок: 0"
-    countLabel.TextColor3 = Color3.fromRGB(175, 175, 175)
-    countLabel.Font = Enum.Font.Gotham
-    countLabel.TextSize = 12
-    countLabel.TextXAlignment = Enum.TextXAlignment.Left
-    countLabel.Parent = logFrame
-
-    -- Перерисовка списка
-    function refreshLogList()
-        -- Удаляем старые строки
-        for _, child in ipairs(scroll:GetChildren()) do
-            if child:IsA("TextLabel") then
-                child:Destroy()
-            end
-        end
-
-        local y = 0
-        for i, entry in ipairs(wrongEntries) do
-            local row = Instance.new("TextLabel")
-            row.Size = UDim2.new(1, -8, 0, 22)
-            row.Position = UDim2.fromOffset(4, y)
-            row.BackgroundTransparency = 1
-            row.Text = string.format(
-                "%d) [%s] «%s» — %s",
-                i, entry.letter, entry.word, entry.time
-            )
-            row.TextColor3 = Color3.fromRGB(255, 180, 180)
-            row.Font = Enum.Font.Gotham
-            row.TextSize = 12
-            row.TextXAlignment = Enum.TextXAlignment.Left
-            row.TextTruncate = Enum.TextTruncate.AtEnd
-            row.LayoutOrder = i
-            row.Parent = scroll
-            y += 24
-        end
-
-        scroll.CanvasSize = UDim2.new(0, 0, 0, y)
-        countLabel.Text = "Ошибок: " .. #wrongEntries
-    end
-
-    -- Кнопки
-    logClose.Activated:Connect(function()
-        logFrame.Visible = false
-    end)
-
-    copyBtn.Activated:Connect(function()
-        local lines = {}
-        for i, entry in ipairs(wrongEntries) do
-            table.insert(lines, string.format(
-                "%d) [%s] %s", i, entry.letter, entry.word
-            ))
-        end
-        local text = table.concat(lines, "\n")
-
-        local copied = false
-        if type(setclipboard) == "function" then
-            copied = pcall(setclipboard, text)
-        end
-        if not copied and type(toclipboard) == "function" then
-            copied = pcall(toclipboard, text)
-        end
-
-        if copied then
-            copyBtn.Text = "Скопировано!"
-        else
-            copyBtn.Text = "Нет доступа к буферу"
-        end
-        task.delay(1.5, function()
-            copyBtn.Text = "Копировать"
-        end)
-    end)
-
-    clearBtn.Activated:Connect(function()
-        table.clear(wrongEntries)
-        table.clear(seenWrong)
-        lastSent = nil
-        refreshLogList()
-        clearBtn.Text = "Очищено"
-        task.delay(1.0, function()
-            clearBtn.Text = "Очистить"
-        end)
-    end)
-
-    -- Перетаскивание окна лога
-    local dragInput, dragStart, startPos
-    logHeader.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1
-            or input.UserInputType == Enum.UserInputType.Touch then
-            dragInput = input
-            dragStart = input.Position
-            startPos = logFrame.Position
-        end
-    end)
-    UserInputService.InputChanged:Connect(function(input)
-        if not dragInput then return end
-        local mouseDrag =
-            dragInput.UserInputType == Enum.UserInputType.MouseButton1
-            and input.UserInputType == Enum.UserInputType.MouseMovement
-        if mouseDrag or input == dragInput then
-            local delta = input.Position - dragStart
-            logFrame.Position = UDim2.new(
-                startPos.X.Scale,
-                startPos.X.Offset + delta.X,
-                startPos.Y.Scale,
-                startPos.Y.Offset + delta.Y
-            )
-        end
-    end)
-    UserInputService.InputEnded:Connect(function(input)
-        if input == dragInput then
-            dragInput = nil
-        end
-    end)
-
--- ============================================================
 -- ЛОГ ОШИБОК (без «уже использовано в этом матче»)
 -- + память слов противников (если они есть в UI)
 -- Вставляется в самый конец скрипта.
@@ -1495,7 +1250,6 @@ do
     local skippedUsed = 0       -- сколько раз сработало «уже было»
 
     -- ===== Причины, которые ИГНОРИРУЕМ полностью =====
-    -- «Уже использовано в этом матче» — не ошибка, не логируем.
     local function isIgnoredReason(text)
         if not text or text == "" then return false end
         local t = text:lower()
@@ -1580,7 +1334,6 @@ do
     local function recordWrong(letter, word, feedbackText)
         if not word or word == "" then return end
 
-        -- Пропускаем игнорируемые причины
         if isIgnoredReason(feedbackText) then
             skippedUsed += 1
             updateCounts()
@@ -1589,12 +1342,10 @@ do
 
         local reason = classifyFeedback(feedbackText)
 
-        -- «Проверяем…» — не ошибка
         if reason == "проверяется" then return end
 
         local key = tostring(letter) .. "|" .. tostring(word)
 
-        -- Если запись с этим словом уже есть — добавляем причину, если новая
         for _, e in ipairs(wrongEntries) do
             if e.key == key then
                 if not e.reasons[reason] then
@@ -1622,7 +1373,7 @@ do
         refreshList()
     end
 
-    -- ===== Запись слова противника (если найдётся в UI) =====
+    -- ===== Запись слова противника =====
     local function recordOpponent(name, word, source)
         if not word or word == "" then return end
         local clean = word:match("^%s*(.-)%s*$")
@@ -1733,12 +1484,9 @@ do
 
         local lowerTxt = txt:lower()
 
-        -- «Проверяем…» — не ошибка
         if lowerTxt:find("проверяем", 1, true) then return end
 
-        -- «Уже использовано» — игнорируем
         if isIgnoredReason(txt) then
-            -- если бот только что отправил слово — зафиксируем пропуск
             if lastSent then
                 skippedUsed += 1
                 lastSent = nil
@@ -1909,7 +1657,7 @@ do
             )
         else
             countLabel.Text = string.format(
-                "Слов противников: %d", #opponentEntries
+                "Слов противников: %d", #opponentEntries,
             )
         end
     end
@@ -2112,5 +1860,4 @@ do
 
     _G.__P_WordBot_ErrorLog = logGui
     refreshList()
-end
 end
