@@ -1,3 +1,6 @@
+-- [[ Rscripts Risk Notice ]]
+-- ...
+-- [[ End Rscripts Risk Notice ]]
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 
