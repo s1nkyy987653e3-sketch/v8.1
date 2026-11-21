@@ -1,0 +1,89 @@
+#NoEnv
+#SingleInstance Force
+SetTitleMatchMode, 2
+SetBatchLines, -1
+SetKeyDelay, 20, 20
+SendMode Event
+
+ToolTip, BF PvP Macro: ON (F1 - Pause | F2 - Exit), 15, 15
+SetTimer, HideTip, -3000
+return
+
+HideTip:
+ToolTip
+return
+
+F1::
+Suspend, Toggle
+if (A_IsSuspended)
+    ToolTip, BF Macro: PAUSED, 15, 15
+else
+    ToolTip, BF Macro: ON, 15, 15
+SetTimer, HideTip, -1500
+return
+
+F2::ExitApp
+
+#IfWinActive, Roblox
+
+; C - Super Jump / Boost
+$vk43::
+Send {Space down}
+Sleep, 25
+Send 1
+Sleep, 15
+Send {vk51}
+Sleep, 20
+Send {WheelUp}
+Send {Space up}
+return
+
+; V - Gun Bug
+$vk56::
+Send 4
+Sleep, 15
+Send {vk51}
+Sleep, 20
+Send {Click}
+Sleep, 15
+Send 1
+return
+
+; G - Stopper
+$vk47::
+Send 1
+Sleep, 15
+Send {vk5A down}
+Sleep, 35
+Send {vk5A up}
+return
+
+; T - Fast Soru
+$vk54::
+Send {vk52}
+Sleep, 25
+Send {vk51}
+Sleep, 15
+Send 1
+return
+
+; B - Combo
+$vk42::
+Send 2
+Sleep, 60
+Send {vk5A}
+Sleep, 250
+Send 1
+Sleep, 60
+Send {vk43}
+Sleep, 300
+Send {vk58}
+Sleep, 250
+Send 3
+Sleep, 60
+Send {vk5A}
+Sleep, 250
+Send {vk58}
+return
+
+#IfWinActive
